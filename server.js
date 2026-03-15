@@ -134,13 +134,16 @@ function addTaskLog(taskId, message) {
 async function verifyHarborConnection(harborUrl, username, password) {
   log('INFO', `开始验证 Harbor 连接: ${harborUrl}`);
   
-  // Harbor API 2.0 版本接口路径
-  const paths = ['/harbor/api/v2/systeminfo', '/api/v2.0/systeminfo'];
+  // Harbor API 2.0 版本接口路径（systeminfo 可用于连通性检查，projects 用于认证检查）
+  const paths = [
+    { systemInfoPath: '/harbor/api/v2/systeminfo', authCheckPath: '/harbor/api/v2.0/projects?page=1&page_size=1' },
+    { systemInfoPath: '/api/v2.0/systeminfo', authCheckPath: '/api/v2.0/projects?page=1&page_size=1' }
+  ];
   
   for (const path of paths) {
-    log('INFO', `尝试 API 路径: ${path}`);
-    const result = await tryConnect(harborUrl, username, password, path);
-    log('INFO', `路径 ${path} 结果: ${JSON.stringify(result)}`);
+    log('INFO', `尝试 API 路径: ${path.systemInfoPath}`);
+    const result = await tryConnect(harborUrl, username, password, path.systemInfoPath, path.authCheckPath);
+    log('INFO', `路径 ${path.systemInfoPath} 结果: ${JSON.stringify(result)}`);
     if (result.success) {
       return result;
     }
@@ -151,18 +154,18 @@ async function verifyHarborConnection(harborUrl, username, password) {
   return await tryDockerLogin(harborUrl, username, password);
 }
 
-async function tryConnect(harborUrl, username, password, path) {
+function requestHarborApi(harborUrl, username, password, apiPath) {
   return new Promise((resolve) => {
     const url = new URL(harborUrl);
     const port = url.port || (url.protocol === 'https:' ? 443 : 80);
     const protocol = url.protocol === 'https:' ? 'https' : 'http';
     
-    log('INFO', `连接信息: ${protocol}://${url.hostname}:${port}${path}`);
+    log('INFO', `连接信息: ${protocol}://${url.hostname}:${port}${apiPath}`);
     
     const options = {
       hostname: url.hostname,
       port: port,
-      path: path,
+      path: apiPath,
       method: 'GET',
       headers: {
         'Authorization': 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64')
@@ -178,20 +181,7 @@ async function tryConnect(harborUrl, username, password, path) {
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         log('INFO', `响应数据长度: ${data.length}`);
-        if (res.statusCode === 200) {
-          try {
-            // 验证返回的是否是有效的 JSON（认证成功才会返回 JSON 数据）
-            const info = JSON.parse(data);
-            log('INFO', `Harbor 验证成功，响应数据有效`);
-            resolve({ success: true });
-          } catch {
-            // 如果无法解析 JSON，说明可能返回的是登录页面或其他非认证成功的响应
-            log('WARN', `验证失败：响应不是有效的 JSON 数据`);
-            resolve({ success: false, error: '认证失败，请检查用户名和密码' });
-          }
-        } else {
-          resolve({ success: false, error: `HTTP ${res.statusCode}` });
-        }
+        resolve({ statusCode: res.statusCode, data });
       });
     });
 
@@ -202,11 +192,47 @@ async function tryConnect(harborUrl, username, password, path) {
 
     req.setTimeout(5000, () => {
       req.destroy();
-      resolve({ success: false, error: '连接超时' });
+      resolve({ error: '连接超时' });
     });
 
     req.end();
   });
+}
+
+async function tryConnect(harborUrl, username, password, systemInfoPath, authCheckPath) {
+  const systemInfoResult = await requestHarborApi(harborUrl, username, password, systemInfoPath);
+  if (systemInfoResult.error) {
+    return { success: false, error: systemInfoResult.error };
+  }
+
+  if (systemInfoResult.statusCode !== 200) {
+    return { success: false, error: `HTTP ${systemInfoResult.statusCode}` };
+  }
+
+  try {
+    JSON.parse(systemInfoResult.data);
+  } catch {
+    log('WARN', `验证失败：响应不是有效的 JSON 数据`);
+    return { success: false, error: '认证失败，请检查用户名和密码' };
+  }
+
+  log('INFO', 'systeminfo 连通性检查通过，开始验证认证信息');
+  const authResult = await requestHarborApi(harborUrl, username, password, authCheckPath);
+  if (authResult.error) {
+    return { success: false, error: authResult.error };
+  }
+
+  if (authResult.statusCode === 200) {
+    log('INFO', 'Harbor 验证成功，认证校验通过');
+    return { success: true };
+  }
+
+  if (authResult.statusCode === 401 || authResult.statusCode === 403) {
+    log('WARN', `认证校验失败，状态码: ${authResult.statusCode}`);
+    return { success: false, error: '认证失败，请检查用户名和密码' };
+  }
+
+  return { success: false, error: `认证校验失败，HTTP ${authResult.statusCode}` };
 }
 
 async function tryDockerLogin(harborUrl, username, password) {
@@ -281,33 +307,40 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig) {
   try {
     const tarFileName = path.basename(tarPath);
     log('INFO', `镜像导入任务开始: ${taskId}, tar文件: ${tarFileName}`);
+    addTaskLog(taskId, `本地导入开始，文件: ${tarFileName}`);
     
     updateTaskStatus(taskId, '执行中', '加载本地镜像包');
     log('INFO', `执行 docker load -i ${tarFileName}`);
+    addTaskLog(taskId, `准备执行: docker load -i ${tarFileName}`);
     await executeCommand(`docker load -i ${tarPath}`, taskId);
 
     updateTaskStatus(taskId, '执行中', '标记目标镜像');
     const imageName = path.basename(tarPath).replace(/\.tar(\.gz)?$/, '');
     const targetImage = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${targetProject}/${imageName}:latest`;
     log('INFO', `标记镜像: docker tag ${imageName} ${targetImage}`);
+    addTaskLog(taskId, `准备执行: docker tag ${imageName} ${targetImage}`);
     await executeCommand(`docker tag ${imageName} ${targetImage}`, taskId);
 
     updateTaskStatus(taskId, '执行中', '登录 Harbor 仓库');
     const harborHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
     log('INFO', `登录 Harbor: docker login -u ${harborConfig.username} -p *** ${harborHost}`);
+    addTaskLog(taskId, `准备执行: docker login -u ${harborConfig.username} -p *** ${harborHost}`);
     await executeCommand(`docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborHost}`, taskId);
 
     updateTaskStatus(taskId, '执行中', '推送到 Harbor');
     log('INFO', `推送镜像: docker push ${targetImage}`);
+    addTaskLog(taskId, `准备执行: docker push ${targetImage}`);
     await executeCommand(`docker push ${targetImage}`, taskId);
 
     updateTaskStatus(taskId, '完成', '镜像导入成功');
+    addTaskLog(taskId, '本地导入完成');
     log('INFO', `镜像导入任务完成: ${taskId}`);
     
     fs.unlinkSync(tarPath);
     log('INFO', `删除临时文件: ${tarPath}`);
   } catch (error) {
     log('ERROR', `镜像导入任务失败: ${taskId}, 错误: ${error.message}`);
+    addTaskLog(taskId, `本地导入失败: ${error.message}`);
     updateTaskStatus(taskId, '失败', error.message);
   }
 }
@@ -513,9 +546,10 @@ const server = http.createServer(async (req, res) => {
         }
 
         const target = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${importProject}/${file.name.replace(/\.tar(\.gz)?$/, '')}:latest`;
-        const task = createTask('镜像导入', file.name, target);
+        const task = createTask('本地导入', file.name, target);
         log('INFO', `创建镜像导入任务: ${task.id}, 文件: ${file.name}, 目标: ${target}`);
-
+        addTaskLog(task.id, `创建本地导入任务，目标项目: ${importProject}`);
+        
         setImmediate(() => loadAndPushTar(task.id, file.filepath, importProject, harborConfig));
 
         sendJson(res, 200, { task });
