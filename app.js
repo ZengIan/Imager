@@ -364,8 +364,6 @@ window.deleteTask = async function(taskId) {
       throw new Error(data.error || '删除失败');
     }
 
-    configStatus.textContent = '任务已删除';
-    configStatus.style.color = 'var(--success)';
     await refreshTasks();
     
     if (taskDetailCard.style.display === 'block') {

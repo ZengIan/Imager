@@ -324,14 +324,7 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig) {
     addTaskLog(taskId, '本地导入完成');
     log('INFO', `镜像导入任务完成: ${taskId}`);
     
-    fs.unlinkSync(tarPath);
-    log('INFO', `删除临时文件: ${tarPath}`);
-  } catch (error) {
-    log('ERROR', `镜像导入任务失败: ${taskId}, 错误: ${error.message}`);
-    addTaskLog(taskId, `本地导入失败: ${error.message}`);
-    updateTaskStatus(taskId, '失败', error.message);
-  } finally {
-    // 无论成功失败，都删除 tar 包
+    // 成功后删除 tar 包
     try {
       if (fs.existsSync(tarPath)) {
         fs.unlinkSync(tarPath);
@@ -340,6 +333,11 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig) {
     } catch (e) {
       log('WARN', `删除 tar 包失败: ${e.message}`);
     }
+  } catch (error) {
+    log('ERROR', `镜像导入任务失败: ${taskId}, 错误: ${error.message}`);
+    addTaskLog(taskId, `本地导入失败: ${error.message}`);
+    addTaskLog(taskId, 'tar 包已保留，可重新执行任务');
+    updateTaskStatus(taskId, '失败', error.message);
   }
 }
 
