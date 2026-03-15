@@ -73,3 +73,4 @@ permission denied while trying to connect to the docker API at unix:///var/run/d
 [2026-03-15T04:41:17.707Z] [ERROR] 请求处理错误: formidable is not a function
 [2026-03-15T04:41:26.807Z] [ERROR] 请求处理错误: formidable is not a function
 [2026-03-15T04:42:05.605Z] [INFO] 删除任务: mmr9nvom
+[2026-03-15T08:50:51.207Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080

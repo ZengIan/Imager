@@ -181,7 +181,10 @@ async function tryConnect(harborUrl, username, password, path) {
         if (res.statusCode === 200) {
           try {
             const info = JSON.parse(data);
-            resolve({ success: true, version: info.harbor_version || 'unknown' });
+            // 尝试多个可能的版本字段
+            const version = info.harbor_version || info['harbor-version'] || info.version || 'unknown';
+            log('INFO', `解析到的版本信息: ${JSON.stringify(info)}`);
+            resolve({ success: true, version: version });
           } catch {
             resolve({ success: true, version: 'unknown' });
           }
