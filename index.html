@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Harbor 镜像上传管理</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="header">
+        <h1>镜像上传管理</h1>
+        <p>支持同步公网镜像到 Harbor 私有仓库，也支持手动上传 tar 包。</p>
+      </header>
+
+      <section class="card">
+        <h2>Harbor 连接配置</h2>
+        <form id="harborForm" class="grid-form">
+          <label>
+            Harbor 地址
+            <input type="url" name="harborUrl" placeholder="https://harbor.example.com" required />
+          </label>
+          <label>
+            项目名称
+            <input type="text" name="project" placeholder="library" required />
+          </label>
+          <label>
+            用户名
+            <input type="text" name="username" placeholder="admin" required />
+          </label>
+          <label>
+            密码 / Token
+            <input type="password" name="password" placeholder="••••••" required />
+          </label>
+          <button type="submit">保存配置</button>
+        </form>
+        <p id="configStatus" class="status"></p>
+      </section>
+
+      <section class="card">
+        <h2>公网镜像同步</h2>
+        <form id="syncForm" class="grid-form">
+          <label>
+            源镜像（公网）
+            <input
+              type="text"
+              name="sourceImage"
+              placeholder="docker.io/library/nginx:1.27"
+              required
+            />
+          </label>
+          <label>
+            目标仓库（Harbor）
+            <input type="text" name="targetRepo" placeholder="library/nginx" required />
+          </label>
+          <label>
+            目标标签
+            <input type="text" name="targetTag" placeholder="1.27" required />
+          </label>
+          <button type="submit">创建同步任务</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>手动上传 tar 包</h2>
+        <form id="uploadForm" class="grid-form">
+          <label class="full-row">
+            选择镜像 tar 包
+            <input type="file" name="imageTar" accept=".tar,.tar.gz" required />
+          </label>
+          <label>
+            导入目标仓库
+            <input type="text" name="importRepo" placeholder="library/custom-image" required />
+          </label>
+          <label>
+            导入标签
+            <input type="text" name="importTag" placeholder="v1.0.0" required />
+          </label>
+          <button type="submit">上传并导入</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>任务列表</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>类型</th>
+              <th>来源</th>
+              <th>目标</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="taskList"></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <h2>后端接口建议（对接 Harbor）</h2>
+        <pre><code>POST /api/harbor/config
+POST /api/images/sync
+POST /api/images/upload
+GET  /api/tasks</code></pre>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
