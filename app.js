@@ -293,12 +293,19 @@ document.querySelector('#uploadForm').addEventListener('submit', async (event) =
   }
 });
 
+window.currentTaskId = null;
+
 window.viewTask = async function(taskId) {
+  window.currentTaskId = taskId;
+  await loadTaskDetail(taskId);
+};
+
+async function loadTaskDetail(taskId) {
   try {
     const res = await fetch('/api/tasks');
     const data = await res.json();
     const task = data.tasks.find(t => t.id === taskId);
-    
+
     if (!task) {
       alert('任务不存在');
       return;
@@ -314,21 +321,31 @@ window.viewTask = async function(taskId) {
         <p><strong>状态:</strong> <span class="status-badge ${getStatusClass(task.status)}">${task.status}</span></p>
         <p><strong>创建时间:</strong> ${task.time}</p>
       </div>
-      <h3>执行日志</h3>
+      <h3>执行日志 <button type="button" id="refreshTaskLogsBtn" class="btn-refresh-small" title="刷新日志">🔄</button></h3>
       <div class="task-logs">
-        ${task.logs && task.logs.length > 0 
+        ${task.logs && task.logs.length > 0
           ? task.logs.map(log => `<div class="log-entry"><span class="log-time">${log.time}</span><span class="log-message">${log.message}</span></div>`).join('')
           : '<p style="color: #6b7280;">暂无日志</p>'
         }
       </div>
       <button onclick="closeTaskDetail()" class="btn-small" style="margin-top: 12px;">关闭</button>
     `;
-    
+
+    // 添加刷新日志按钮事件
+    document.getElementById('refreshTaskLogsBtn').addEventListener('click', () => {
+      if (window.currentTaskId) {
+        loadTaskDetail(window.currentTaskId);
+        const btn = document.getElementById('refreshTaskLogsBtn');
+        btn.style.transform = 'rotate(360deg)';
+        setTimeout(() => btn.style.transform = '', 500);
+      }
+    });
+
     taskDetailCard.scrollIntoView({ behavior: 'smooth' });
   } catch (error) {
     alert('获取任务详情失败: ' + error.message);
   }
-};
+}
 
 window.closeTaskDetail = function() {
   taskDetailCard.style.display = 'none';

@@ -1,3 +1,5 @@
+// 设置 UTF-8 编码，解决 Windows 命令行中文乱码
+process.env.CHARSET = 'UTF-8';
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
@@ -223,12 +225,12 @@ async function tryDockerLogin(harborUrl, username, password) {
   return new Promise((resolve) => {
     const url = new URL(harborUrl);
     const registry = url.host;
-    
+
     log('INFO', `执行 Docker 登录验证: docker login -u ${username} -p *** ${registry}`);
-    
+
     const command = `docker login -u ${username} -p ${password} ${registry}`;
-    
-    exec(command, { timeout: 10000 }, (error, stdout, stderr) => {
+
+    exec(command, { encoding: 'utf8', timeout: 10000 }, (error, stdout, stderr) => {
       if (error) {
         log('ERROR', `Docker 登录失败: ${error.message}`);
         resolve({ success: false, error: '认证失败，请检查用户名和密码' });
@@ -245,7 +247,7 @@ function executeCommand(command, taskId) {
     log('INFO', `执行命令: ${command}`);
     addTaskLog(taskId, `执行: ${command}`);
 
-    exec(command, (error, stdout, stderr) => {
+    exec(command, { encoding: 'utf8' }, (error, stdout, stderr) => {
       if (stdout) {
         stdout.trim().split('\n').forEach(line => {
           if (line) addTaskLog(taskId, line);
@@ -280,7 +282,11 @@ async function syncImage(taskId, sourceImage, targetProject, harborConfig) {
     await executeCommand(`docker tag ${sourceImage} ${targetImage}`, taskId);
 
     updateTaskStatus(taskId, '执行中', '登录到 Harbor');
-    await executeCommand(`docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborConfig.harborUrl.replace(/^https?:\/\//, '')}`, taskId);
+    const loginCmd = `docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborConfig.harborUrl.replace(/^https?:\/\//, '')}`;
+    const loginCmdMasked = `docker login -u ${harborConfig.username} -p *** ${harborConfig.harborUrl.replace(/^https?:\/\//, '')}`;
+    log('INFO', `执行命令: ${loginCmdMasked}`);
+    addTaskLog(taskId, `执行: ${loginCmdMasked}`);
+    await executeCommand(loginCmd, taskId);
 
     updateTaskStatus(taskId, '执行中', '推送到 Harbor');
     await executeCommand(`docker push ${targetImage}`, taskId);
@@ -296,7 +302,7 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig) {
     const tarFileName = path.basename(tarPath);
     log('INFO', `镜像导入任务开始: ${taskId}, tar文件: ${tarFileName}`);
     addTaskLog(taskId, `本地导入开始，文件: ${tarFileName}`);
-    
+
     updateTaskStatus(taskId, '执行中', '加载本地镜像包');
     log('INFO', `执行 docker load -i ${tarFileName}`);
     addTaskLog(taskId, `准备执行: docker load -i ${tarFileName}`);
@@ -377,7 +383,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/tasks') {
       sendJson(res, 200, { tasks: tasks.map(t => ({
         ...t,
-        logs: t.logs.slice(-20)
+        logs: t.logs
       })) });
       return;
     }
@@ -393,10 +399,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && pathname === '/api/logs') {
       try {
+        const LOG_FILE = path.join(ROOT, 'app.log');
         let logs = [];
         if (fs.existsSync(LOG_FILE)) {
           const content = fs.readFileSync(LOG_FILE, 'utf8');
-          logs = content.trim().split('\n').filter(line => line.trim()).slice(-100);
+          logs = content.trim().split('\n').filter(line => line.trim());
         }
         sendJson(res, 200, { logs });
       } catch (error) {

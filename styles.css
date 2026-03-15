@@ -220,6 +220,38 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.btn-refresh {
+  padding: 4px 10px;
+  font-size: 14px;
+  background: var(--primary);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: 8px;
+  vertical-align: middle;
+  transition: transform 0.5s ease;
+}
+
+.btn-refresh:hover {
+  filter: brightness(1.1);
+}
+
+.btn-refresh-small {
+  padding: 2px 6px;
+  font-size: 12px;
+  background: var(--primary);
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  margin-left: 6px;
+  vertical-align: middle;
+  transition: transform 0.5s ease;
+}
+
+.btn-refresh-small:hover {
+  filter: brightness(1.1);
+}
+
 .btn-small {
   padding: 6px 12px;
   font-size: 13px;
