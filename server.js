@@ -134,8 +134,8 @@ function addTaskLog(taskId, message) {
 async function verifyHarborConnection(harborUrl, username, password) {
   log('INFO', `开始验证 Harbor 连接: ${harborUrl}`);
   
-  // 尝试多个 API 路径
-  const paths = ['/api/v2/systeminfo', '/api/systeminfo', '/harbor/api/v2/systeminfo'];
+  // Harbor API 2.0 版本接口路径
+  const paths = ['/harbor/api/v2/systeminfo', '/api/v2.0/systeminfo'];
   
   for (const path of paths) {
     log('INFO', `尝试 API 路径: ${path}`);
@@ -275,25 +275,35 @@ async function syncImage(taskId, sourceImage, targetProject, harborConfig) {
 
 async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig) {
   try {
-    updateTaskStatus(taskId, '执行中', '加载 tar 包');
+    const tarFileName = path.basename(tarPath);
+    log('INFO', `镜像导入任务开始: ${taskId}, tar文件: ${tarFileName}`);
+    
+    updateTaskStatus(taskId, '执行中', '加载本地镜像包');
+    log('INFO', `执行 docker load -i ${tarFileName}`);
     await executeCommand(`docker load -i ${tarPath}`, taskId);
 
     updateTaskStatus(taskId, '执行中', '标记目标镜像');
     const imageName = path.basename(tarPath).replace(/\.tar(\.gz)?$/, '');
     const targetImage = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${targetProject}/${imageName}:latest`;
+    log('INFO', `标记镜像: docker tag ${imageName} ${targetImage}`);
     await executeCommand(`docker tag ${imageName} ${targetImage}`, taskId);
 
-    updateTaskStatus(taskId, '执行中', '登录到 Harbor');
-    await executeCommand(`docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborConfig.harborUrl.replace(/^https?:\/\//, '')}`, taskId);
+    updateTaskStatus(taskId, '执行中', '登录 Harbor 仓库');
+    const harborHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
+    log('INFO', `登录 Harbor: docker login -u ${harborConfig.username} -p *** ${harborHost}`);
+    await executeCommand(`docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborHost}`, taskId);
 
     updateTaskStatus(taskId, '执行中', '推送到 Harbor');
+    log('INFO', `推送镜像: docker push ${targetImage}`);
     await executeCommand(`docker push ${targetImage}`, taskId);
 
-    updateTaskStatus(taskId, '完成', 'tar 包上传成功');
+    updateTaskStatus(taskId, '完成', '镜像导入成功');
+    log('INFO', `镜像导入任务完成: ${taskId}`);
     
     fs.unlinkSync(tarPath);
     log('INFO', `删除临时文件: ${tarPath}`);
   } catch (error) {
+    log('ERROR', `镜像导入任务失败: ${taskId}, 错误: ${error.message}`);
     updateTaskStatus(taskId, '失败', error.message);
   }
 }
@@ -499,7 +509,8 @@ const server = http.createServer(async (req, res) => {
         }
 
         const target = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${importProject}/${file.name.replace(/\.tar(\.gz)?$/, '')}:latest`;
-        const task = createTask('tar 导入', file.name, target);
+        const task = createTask('镜像导入', file.name, target);
+        log('INFO', `创建镜像导入任务: ${task.id}, 文件: ${file.name}, 目标: ${target}`);
 
         setImmediate(() => loadAndPushTar(task.id, file.filepath, importProject, harborConfig));
 
