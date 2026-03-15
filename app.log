@@ -1,0 +1,75 @@
+[2026-03-15T03:26:05.635Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T03:27:20.194Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:27:21.237Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:27:21.475Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:27:21.714Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:27:24.699Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:27:24.790Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:27:25.520Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:32:28.104Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T03:33:18.952Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T03:33:29.249Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:33:29.427Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:33:30.135Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:33:30.443Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:33:30.692Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:33:30.929Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:39:12.098Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T03:41:35.400Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T03:41:55.534Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:41:58.267Z] [INFO] 保存 Harbor 配置: prod - https://quanzhenglong.com
+[2026-03-15T03:42:05.712Z] [INFO] 保存 Harbor 配置: prod - https://quanzhenglong.com
+[2026-03-15T03:42:06.656Z] [INFO] 保存 Harbor 配置: prod - https://quanzhenglong.com
+[2026-03-15T03:42:06.912Z] [INFO] 保存 Harbor 配置: prod - https://quanzhenglong.com
+[2026-03-15T03:43:05.924Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T03:43:29.433Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T03:43:31.252Z] [INFO] 保存 Harbor 配置: prod - https://quanzhenglong.com
+[2026-03-15T03:43:49.093Z] [INFO] 保存 Harbor 配置: df - https://quanzhenglong.comdf
+[2026-03-15T03:48:54.740Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T04:06:36.731Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T04:10:28.606Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:34.876Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:38.584Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:38.993Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:39.202Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:39.393Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:39.570Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:40.104Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:40.297Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:40.447Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:40.668Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:40.830Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:41.018Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:41.207Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:41.385Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:41.573Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:10:41.761Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:14:10.777Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T04:14:56.654Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T04:23:15.527Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:3000 
+[2026-03-15T04:27:03.450Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T04:27:43.227Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T04:28:07.405Z] [INFO] 删除仓库配置: df
+[2026-03-15T04:28:22.773Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:28:23.667Z] [INFO] 保存 Harbor 配置: prod - https://quanzhenglong.com
+[2026-03-15T04:28:43.182Z] [INFO] 保存 Harbor 配置: dsf  - https://quanzhenglong.com
+[2026-03-15T04:28:56.703Z] [INFO] 删除仓库配置: dsf 
+[2026-03-15T04:30:57.640Z] [INFO] 保存 Harbor 配置: prod - https://quanzhenglong.com
+[2026-03-15T04:31:06.479Z] [INFO] 删除仓库配置: prod
+[2026-03-15T04:37:46.219Z] [INFO] 服务器启动成功，监听 http://0.0.0.0:8080
+[2026-03-15T04:38:03.400Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:38:40.880Z] [INFO] 保存 Harbor 配置: prod - https://quanzhenglong.com
+[2026-03-15T04:40:17.529Z] [INFO] 删除仓库配置: prod
+[2026-03-15T04:40:33.797Z] [ERROR] Harbor 连接验证失败: HTTP 404
+[2026-03-15T04:40:33.128Z] [INFO] 保存 Harbor 配置: prod - https://quanzhenglong.com
+[2026-03-15T04:40:38.996Z] [INFO] 任务 mmr9nvom 状态更新: 执行中 - 开始拉取源镜像
+[2026-03-15T04:40:38.998Z] [INFO] 执行命令: docker pull docker.1ms.run/library/nginx:latest
+[2026-03-15T04:40:39.228Z] [ERROR] 命令执行失败: Command failed: docker pull docker.1ms.run/library/nginx:latest
+permission denied while trying to connect to the docker API at unix:///var/run/docker.sock
+
+[2026-03-15T04:40:39.235Z] [INFO] 任务 mmr9nvom 状态更新: 失败 - Command failed: docker pull docker.1ms.run/library/nginx:latest
+permission denied while trying to connect to the docker API at unix:///var/run/docker.sock
+
+[2026-03-15T04:41:17.707Z] [ERROR] 请求处理错误: formidable is not a function
+[2026-03-15T04:41:26.807Z] [ERROR] 请求处理错误: formidable is not a function
+[2026-03-15T04:42:05.605Z] [INFO] 删除任务: mmr9nvom

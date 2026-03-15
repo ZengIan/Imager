@@ -9,20 +9,20 @@
   <body>
     <main class="page">
       <header class="header">
-        <h1>镜像上传管理</h1>
+        <h1>Harbor 镜像上传管理</h1>
         <p>支持同步公网镜像到 Harbor 私有仓库，也支持手动上传 tar 包。</p>
       </header>
 
       <section class="card">
-        <h2>Harbor 连接配置</h2>
-        <form id="harborForm" class="grid-form">
+        <h2>仓库源配置</h2>
+        <form id="harborForm" class="inline-form">
           <label>
-            Harbor 地址
-            <input type="url" name="harborUrl" placeholder="https://harbor.example.com" required />
+            Harbor 名称
+            <input type="text" name="repoName" placeholder="仓库名称" required />
           </label>
           <label>
-            项目名称
-            <input type="text" name="project" placeholder="library" required />
+            仓库地址
+            <input type="url" name="harborUrl" placeholder="https://harbor.example.com" required />
           </label>
           <label>
             用户名
@@ -32,16 +32,22 @@
             密码 / Token
             <input type="password" name="password" placeholder="••••••" required />
           </label>
+          <button type="button" id="verifyBtn">验证连接</button>
           <button type="submit">保存配置</button>
         </form>
         <p id="configStatus" class="status"></p>
+
+        <div id="repoListContainer" style="margin-top: 20px;">
+          <h3 style="font-size: 14px; color: var(--muted); margin-bottom: 12px;">已保存的仓库</h3>
+          <div id="repoList" class="repo-list"></div>
+        </div>
       </section>
 
       <section class="card">
-        <h2>公网镜像同步</h2>
-        <form id="syncForm" class="grid-form">
+        <h2>镜像同步</h2>
+        <form id="syncForm" class="inline-form">
           <label>
-            源镜像（公网）
+            源镜像
             <input
               type="text"
               name="sourceImage"
@@ -50,12 +56,14 @@
             />
           </label>
           <label>
-            目标仓库（Harbor）
-            <input type="text" name="targetRepo" placeholder="library/nginx" required />
+            目标仓库
+            <select name="targetRepo" id="syncTargetRepo" required>
+              <option value="">请选择仓库</option>
+            </select>
           </label>
           <label>
-            目标标签
-            <input type="text" name="targetTag" placeholder="1.27" required />
+            目标项目
+            <input type="text" name="targetProject" placeholder="library" required />
           </label>
           <button type="submit">创建同步任务</button>
         </form>
@@ -63,18 +71,20 @@
 
       <section class="card">
         <h2>手动上传 tar 包</h2>
-        <form id="uploadForm" class="grid-form">
-          <label class="full-row">
+        <form id="uploadForm" class="inline-form">
+          <label>
             选择镜像 tar 包
             <input type="file" name="imageTar" accept=".tar,.tar.gz" required />
           </label>
           <label>
-            导入目标仓库
-            <input type="text" name="importRepo" placeholder="library/custom-image" required />
+            目标仓库
+            <select name="targetRepo" id="uploadTargetRepo" required>
+              <option value="">请选择仓库</option>
+            </select>
           </label>
           <label>
-            导入标签
-            <input type="text" name="importTag" placeholder="v1.0.0" required />
+            导入目标项目
+            <input type="text" name="importProject" placeholder="library" required />
           </label>
           <button type="submit">上传并导入</button>
         </form>
@@ -90,19 +100,19 @@
               <th>来源</th>
               <th>目标</th>
               <th>状态</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody id="taskList"></tbody>
         </table>
       </section>
 
-      <section class="card">
-        <h2>后端接口建议（对接 Harbor）</h2>
-        <pre><code>POST /api/harbor/config
-POST /api/images/sync
-POST /api/images/upload
-GET  /api/tasks</code></pre>
+      <section class="card" id="taskDetailCard" style="display: none;">
+        <h2>任务详情</h2>
+        <div id="taskDetail"></div>
       </section>
+
+
     </main>
 
     <script src="app.js"></script>

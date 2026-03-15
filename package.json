@@ -1,0 +1,20 @@
+{
+  "name": "harbor-image-manager",
+  "version": "1.0.0",
+  "description": "Harbor 镜像上传管理系统",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": ["harbor", "docker", "image-management"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "formidable": "^3.5.1",
+    "crypto-js": "^4.2.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
