@@ -250,6 +250,17 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* 任务列表列宽设置 */
+.col-status {
+  width: 100px;
+  text-align: center;
+}
+
+.col-action {
+  width: 220px;
+  text-align: right;
+}
+
 .repo-list {
   display: flex;
   flex-direction: column;
