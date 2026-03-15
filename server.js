@@ -536,9 +536,9 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        const target = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${importProject}/${file.name.replace(/\.tar(\.gz)?$/, '')}:latest`;
-        const task = createTask('本地导入', file.name, target);
-        log('INFO', `创建镜像导入任务: ${task.id}, 文件: ${file.name}, 目标: ${target}`);
+        const target = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${importProject}/${file.originalFilename.replace(/\.tar(\.gz)?$/, '')}:latest`;
+        const task = createTask('本地导入', file.originalFilename, target);
+        log('INFO', `创建镜像导入任务: ${task.id}, 文件: ${file.originalFilename}, 目标: ${target}`);
         addTaskLog(task.id, `创建本地导入任务，目标项目: ${importProject}`);
         
         setImmediate(() => loadAndPushTar(task.id, file.filepath, importProject, harborConfig));
