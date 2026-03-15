@@ -29,7 +29,7 @@ function renderTasks(tasks) {
       <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${task.source}</td>
       <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${task.target}</td>
       <td class="col-status"><span class="status-badge ${statusClass}">${task.status}</span></td>
-      <td class="col-action" style="text-align: right;">
+      <td class="col-action">
         <button class="btn-small btn-view" onclick="viewTask('${task.id}')">查看</button>
         <button class="btn-small btn-retry" onclick="retryTask('${task.id}')" ${isSuccess ? 'disabled' : ''}>重新执行</button>
         <button class="btn-small btn-delete" onclick="deleteTask('${task.id}')">删除</button>
