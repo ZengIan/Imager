@@ -108,7 +108,7 @@ function updateTaskStatus(taskId, status, message = '') {
 function createTask(type, source, target) {
   const task = {
     id: Date.now().toString(36),
-    time: new Date().toLocaleString(),
+    time: new Date().toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
     type,
     source,
     target,
