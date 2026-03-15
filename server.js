@@ -134,18 +134,21 @@ function addTaskLog(taskId, message) {
 async function verifyHarborConnection(harborUrl, username, password) {
   log('INFO', `开始验证 Harbor 连接: ${harborUrl}`);
   
-  // Harbor API 2.0 版本接口路径（systeminfo 可用于连通性检查，projects 用于认证检查）
+  // 先做认证校验，再获取 systeminfo（避免仅因 systeminfo 返回 200 误判为成功）
   const paths = [
-    { systemInfoPath: '/harbor/api/v2/systeminfo', authCheckPath: '/harbor/api/v2.0/projects?page=1&page_size=1' },
-    { systemInfoPath: '/api/v2.0/systeminfo', authCheckPath: '/api/v2.0/projects?page=1&page_size=1' }
+    { authCheckPath: '/harbor/api/v2.0/projects?page=1&page_size=1', systemInfoPath: '/harbor/api/v2/systeminfo' },
+    { authCheckPath: '/api/v2.0/projects?page=1&page_size=1', systemInfoPath: '/api/v2.0/systeminfo' }
   ];
   
   for (const path of paths) {
-    log('INFO', `尝试 API 路径: ${path.systemInfoPath}`);
-    const result = await tryConnect(harborUrl, username, password, path.systemInfoPath, path.authCheckPath);
-    log('INFO', `路径 ${path.systemInfoPath} 结果: ${JSON.stringify(result)}`);
+    log('INFO', `尝试认证路径: ${path.authCheckPath}`);
+    const result = await tryConnect(harborUrl, username, password, path.authCheckPath, path.systemInfoPath);
+    log('INFO', `认证路径 ${path.authCheckPath} 结果: ${JSON.stringify(result)}`);
     if (result.success) {
       return result;
+    }
+    if (result.authFailed) {
+      return { success: false, error: '认证失败，请检查用户名和密码' };
     }
   }
   
@@ -199,40 +202,40 @@ function requestHarborApi(harborUrl, username, password, apiPath) {
   });
 }
 
-async function tryConnect(harborUrl, username, password, systemInfoPath, authCheckPath) {
+async function tryConnect(harborUrl, username, password, authCheckPath, systemInfoPath) {
+  const authResult = await requestHarborApi(harborUrl, username, password, authCheckPath);
+  if (authResult.error) {
+    return { success: false, error: authResult.error };
+  }
+
+  if (authResult.statusCode === 401 || authResult.statusCode === 403) {
+    log('WARN', `认证校验失败，状态码: ${authResult.statusCode}`);
+    return { success: false, authFailed: true, error: '认证失败，请检查用户名和密码' };
+  }
+
+  if (authResult.statusCode !== 200) {
+    return { success: false, error: `认证校验失败，HTTP ${authResult.statusCode}` };
+  }
+
+  log('INFO', '认证校验通过，开始获取 systeminfo');
   const systemInfoResult = await requestHarborApi(harborUrl, username, password, systemInfoPath);
   if (systemInfoResult.error) {
     return { success: false, error: systemInfoResult.error };
   }
 
   if (systemInfoResult.statusCode !== 200) {
-    return { success: false, error: `HTTP ${systemInfoResult.statusCode}` };
+    return { success: false, error: `systeminfo 请求失败，HTTP ${systemInfoResult.statusCode}` };
   }
 
   try {
-    JSON.parse(systemInfoResult.data);
+    const info = JSON.parse(systemInfoResult.data);
+    const version = info.harbor_version || info.version || 'unknown';
+    log('INFO', `Harbor 验证成功，版本: ${version}`);
+    return { success: true, version };
   } catch {
-    log('WARN', `验证失败：响应不是有效的 JSON 数据`);
-    return { success: false, error: '认证失败，请检查用户名和密码' };
+    log('WARN', 'systeminfo 响应不是有效 JSON，使用认证结果判定成功');
+    return { success: true, version: 'unknown' };
   }
-
-  log('INFO', 'systeminfo 连通性检查通过，开始验证认证信息');
-  const authResult = await requestHarborApi(harborUrl, username, password, authCheckPath);
-  if (authResult.error) {
-    return { success: false, error: authResult.error };
-  }
-
-  if (authResult.statusCode === 200) {
-    log('INFO', 'Harbor 验证成功，认证校验通过');
-    return { success: true };
-  }
-
-  if (authResult.statusCode === 401 || authResult.statusCode === 403) {
-    log('WARN', `认证校验失败，状态码: ${authResult.statusCode}`);
-    return { success: false, error: '认证失败，请检查用户名和密码' };
-  }
-
-  return { success: false, error: `认证校验失败，HTTP ${authResult.statusCode}` };
 }
 
 async function tryDockerLogin(harborUrl, username, password) {
@@ -530,9 +533,12 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        const file = files.imageTar;
-        const targetRepo = fields.targetRepo;
-        const importProject = fields.importProject;
+        const fileField = files.imageTar;
+        const file = Array.isArray(fileField) ? fileField[0] : fileField;
+        const targetRepoField = fields.targetRepo;
+        const importProjectField = fields.importProject;
+        const targetRepo = Array.isArray(targetRepoField) ? targetRepoField[0] : targetRepoField;
+        const importProject = Array.isArray(importProjectField) ? importProjectField[0] : importProjectField;
 
         if (!file || !targetRepo || !importProject) {
           sendJson(res, 400, { error: '缺少必填字段' });
