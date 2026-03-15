@@ -239,8 +239,6 @@ document.querySelector('#syncForm').addEventListener('submit', async (event) => 
       targetRepo: formData.get('targetRepo'),
       targetProject: formData.get('targetProject')
     });
-    configStatus.textContent = `同步任务已创建：${result.task.id}`;
-    configStatus.style.color = 'var(--success)';
     form.reset();
     await refreshTasks();
   } catch (error) {
@@ -281,8 +279,6 @@ document.querySelector('#uploadForm').addEventListener('submit', async (event) =
       throw new Error(data.error || '上传失败');
     }
 
-    configStatus.textContent = `上传任务已创建：${data.task.id}`;
-    configStatus.style.color = 'var(--success)';
     form.reset();
     await refreshTasks();
   } catch (error) {
