@@ -330,6 +330,16 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig) {
     log('ERROR', `镜像导入任务失败: ${taskId}, 错误: ${error.message}`);
     addTaskLog(taskId, `本地导入失败: ${error.message}`);
     updateTaskStatus(taskId, '失败', error.message);
+  } finally {
+    // 无论成功失败，都删除 tar 包
+    try {
+      if (fs.existsSync(tarPath)) {
+        fs.unlinkSync(tarPath);
+        log('INFO', `删除 tar 包: ${tarPath}`);
+      }
+    } catch (e) {
+      log('WARN', `删除 tar 包失败: ${e.message}`);
+    }
   }
 }
 
@@ -508,7 +518,11 @@ const server = http.createServer(async (req, res) => {
       const form = formidable({
         uploadDir: UPLOAD_DIR,
         keepExtensions: true,
-        maxFileSize: 10 * 1024 * 1024 * 1024
+        maxFileSize: 10 * 1024 * 1024 * 1024,
+        filename: (name, ext, part, form) => {
+          // 保留原始文件名
+          return part.originalFilename;
+        }
       });
 
       form.parse(req, (err, fields, files) => {
@@ -536,12 +550,20 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        const target = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${importProject}/${file.originalFilename.replace(/\.tar(\.gz)?$/, '')}:latest`;
-        const task = createTask('本地导入', file.originalFilename, target);
-        log('INFO', `创建镜像导入任务: ${task.id}, 文件: ${file.originalFilename}, 目标: ${target}`);
+        const originalFilename = file.originalFilename;
+        const targetFilePath = path.join(UPLOAD_DIR, originalFilename);
+
+        // 检查文件是否已存在
+        if (fs.existsSync(targetFilePath)) {
+          log('INFO', `文件已存在，跳过上传: ${originalFilename}`);
+        }
+
+        const target = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${importProject}/${originalFilename.replace(/\.tar(\.gz)?$/, '')}:latest`;
+        const task = createTask('本地导入', originalFilename, target);
+        log('INFO', `创建镜像导入任务: ${task.id}, 文件: ${originalFilename}, 目标: ${target}`);
         addTaskLog(task.id, `创建本地导入任务，目标项目: ${importProject}`);
         
-        setImmediate(() => loadAndPushTar(task.id, file.filepath, importProject, harborConfig));
+        setImmediate(() => loadAndPushTar(task.id, targetFilePath, importProject, harborConfig));
 
         sendJson(res, 200, { task });
       });
@@ -554,6 +576,47 @@ const server = http.createServer(async (req, res) => {
       saveTasks();
       log('INFO', `删除任务: ${taskId}`);
       sendJson(res, 200, { message: '任务已删除' });
+      return;
+    }
+
+    if (req.method === 'POST' && pathname.match(/^\/api\/tasks\/[a-z0-9]+\/retry$/)) {
+      const taskId = pathname.split('/')[3];
+      const task = tasks.find(t => t.id === taskId);
+      
+      if (!task) {
+        sendJson(res, 404, { error: '任务不存在' });
+        return;
+      }
+      
+      if (task.status === '完成') {
+        sendJson(res, 400, { error: '已成功的任务不能重新执行' });
+        return;
+      }
+      
+      // 重置任务状态
+      task.status = '待执行';
+      task.message = '';
+      task.logs = [];
+      task.time = new Date().toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      delete task.updatedAt;
+      saveTasks();
+      
+      log('INFO', `重新执行任务: ${taskId}`);
+      
+      // 根据任务类型重新执行
+      if (task.type === '镜像同步') {
+        const harborConfig = harborConfigs.find(c => task.target.includes(c.harborUrl.replace(/^https?:\/\//, '')));
+        if (harborConfig) {
+          const targetProject = task.target.split('/')[1];
+          setImmediate(() => syncImage(taskId, task.source, targetProject, harborConfig));
+        }
+      } else if (task.type === '本地导入') {
+        // 本地导入任务无法重新执行（因为 tar 包已删除）
+        sendJson(res, 400, { error: '本地导入任务无法重新执行，tar 包已被删除' });
+        return;
+      }
+      
+      sendJson(res, 200, { message: '任务已重新执行', task });
       return;
     }
 

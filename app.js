@@ -21,6 +21,7 @@ function renderTasks(tasks) {
     const tr = document.createElement('tr');
     const statusClass = getStatusClass(task.status);
     
+    const isSuccess = task.status === '完成';
     tr.innerHTML = `
       <td>${task.time}</td>
       <td>${task.type}</td>
@@ -29,6 +30,7 @@ function renderTasks(tasks) {
       <td><span class="status-badge ${statusClass}">${task.status}</span></td>
       <td>
         <button class="btn-small btn-view" onclick="viewTask('${task.id}')">查看</button>
+        <button class="btn-small btn-retry" onclick="retryTask('${task.id}')" ${isSuccess ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''}>重新执行</button>
         <button class="btn-small btn-delete" onclick="deleteTask('${task.id}')">删除</button>
       </td>
     `;
@@ -310,7 +312,6 @@ window.viewTask = async function(taskId) {
         <p><strong>目标:</strong> ${task.target}</p>
         <p><strong>状态:</strong> <span class="status-badge ${getStatusClass(task.status)}">${task.status}</span></p>
         <p><strong>创建时间:</strong> ${task.time}</p>
-        ${task.updatedAt ? `<p><strong>更新时间:</strong> ${task.updatedAt}</p>` : ''}
       </div>
       <h3>执行日志</h3>
       <div class="task-logs">
@@ -330,6 +331,23 @@ window.viewTask = async function(taskId) {
 
 window.closeTaskDetail = function() {
   taskDetailCard.style.display = 'none';
+};
+
+window.retryTask = async function(taskId) {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/retry`, {
+      method: 'POST'
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '重新执行失败');
+    }
+    
+    await refreshTasks();
+  } catch (error) {
+    alert('重新执行任务失败: ' + error.message);
+  }
 };
 
 window.deleteTask = async function(taskId) {
