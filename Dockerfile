@@ -1,5 +1,5 @@
 # Imager 镜像上传管理工具
-FROM docker.1ms.run/node:18-alpine
+FROM docker.1ms.run/library/node:18-alpine
 
 # 安装必要的系统工具
 RUN apk add --no-cache \

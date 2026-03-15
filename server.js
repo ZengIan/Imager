@@ -137,8 +137,37 @@ function addTaskLog(taskId, message) {
 async function verifyHarborConnection(harborUrl, username, password) {
   log('INFO', `开始验证 Harbor 连接: ${harborUrl}`);
   
-  // 直接使用 docker login 验证，最可靠
+  // 优先使用 skopeo 验证，如果不可用则回退到 docker login
+  const hasSkopeo = await checkSkopeo();
+  if (hasSkopeo) {
+    return await trySkopeoLogin(harborUrl, username, password);
+  }
   return await tryDockerLogin(harborUrl, username, password);
+}
+
+// 使用 skopeo 验证 Harbor 连接
+function trySkopeoLogin(harborUrl, username, password) {
+  return new Promise((resolve) => {
+    const url = new URL(harborUrl);
+    const registry = url.host;
+    
+    // 使用 skopeo login 验证（skopeo login 不需要 docker:// 前缀）
+    const command = `skopeo login --username ${username} --password ${password} --tls-verify=false ${registry}`;
+    const commandMasked = `skopeo login --username ${username} --password *** --tls-verify=false ${registry}`;
+    log('INFO', `执行 skopeo 登录验证: ${commandMasked}`);
+    
+    exec(command, { encoding: 'utf8', timeout: 10000 }, (error, stdout, stderr) => {
+      if (error) {
+        // 隐藏错误信息中的密码
+        const errorMessage = error.message.replace(/--password\s+\S+/g, '--password ***');
+        log('ERROR', `skopeo 登录失败: ${errorMessage}`);
+        resolve({ success: false, error: '认证失败，请检查用户名和密码' });
+      } else {
+        log('INFO', 'skopeo 登录验证成功');
+        resolve({ success: true });
+      }
+    });
+  });
 }
 
 function requestHarborApi(harborUrl, username, password, apiPath) {
@@ -242,7 +271,9 @@ async function tryDockerLogin(harborUrl, username, password) {
 
     exec(command, { encoding: 'utf8', timeout: 10000 }, (error, stdout, stderr) => {
       if (error) {
-        log('ERROR', `Docker 登录失败: ${error.message}`);
+        // 隐藏错误信息中的密码
+        const errorMessage = error.message.replace(/-p\s+\S+/g, '-p ***');
+        log('ERROR', `Docker 登录失败: ${errorMessage}`);
         resolve({ success: false, error: '认证失败，请检查用户名和密码' });
       } else {
         log('INFO', 'Docker 登录验证成功');
@@ -276,7 +307,13 @@ function executeCommand(command, taskId, hidePassword = false) {
         });
       }
       if (error) {
-        log('ERROR', `命令执行失败: ${error.message}`);
+        // 隐藏错误信息中的密码
+        let errorMessage = error.message;
+        if (hidePassword) {
+          errorMessage = errorMessage.replace(/-p\s+\S+/g, '-p ***');
+        }
+        errorMessage = errorMessage.replace(/--dest-creds\s+([^:]+):(\S+)/g, '--dest-creds $1:***');
+        log('ERROR', `命令执行失败: ${errorMessage}`);
         reject(error);
       } else {
         resolve(stdout);
@@ -328,8 +365,12 @@ async function syncImage(taskId, sourceImage, targetProject, harborConfig, arch 
     addTaskLog(taskId, '✅ 镜像同步成功完成');
     log('INFO', `镜像同步任务成功完成: ${taskId}`);
   } catch (error) {
-    updateTaskStatus(taskId, '失败', error.message);
-    addTaskLog(taskId, `❌ 镜像同步失败: ${error.message}`);
+    // 隐藏错误信息中的密码
+    let errorMessage = error.message;
+    errorMessage = errorMessage.replace(/-p\s+\S+/g, '-p ***');
+    errorMessage = errorMessage.replace(/--dest-creds\s+([^:]+):(\S+)/g, '--dest-creds $1:***');
+    updateTaskStatus(taskId, '失败', errorMessage);
+    addTaskLog(taskId, `❌ 镜像同步失败: ${errorMessage}`);
   }
 }
 
@@ -461,10 +502,14 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
     addTaskLog(taskId, `✅ 镜像导入成功完成，共 ${images.length} 个镜像`);
     log('INFO', `镜像导入任务成功完成: ${taskId}, 共 ${images.length} 个镜像`);
   } catch (error) {
-    log('ERROR', `镜像导入任务失败: ${taskId}, 错误: ${error.message}`);
-    addTaskLog(taskId, `❌ 本地导入失败: ${error.message}`);
+    // 隐藏错误信息中的密码
+    let errorMessage = error.message;
+    errorMessage = errorMessage.replace(/-p\s+\S+/g, '-p ***');
+    errorMessage = errorMessage.replace(/--dest-creds\s+([^:]+):(\S+)/g, '--dest-creds $1:***');
+    log('ERROR', `镜像导入任务失败: ${taskId}, 错误: ${errorMessage}`);
+    addTaskLog(taskId, `❌ 本地导入失败: ${errorMessage}`);
     addTaskLog(taskId, 'tar 包已保留，可重新执行任务');
-    updateTaskStatus(taskId, '失败', error.message);
+    updateTaskStatus(taskId, '失败', errorMessage);
   }
 }
 
