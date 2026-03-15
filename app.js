@@ -194,7 +194,7 @@ async function verifyConnection() {
       username,
       password
     });
-    configStatus.textContent = `验证成功！Harbor 版本：${result.version}`;
+    configStatus.textContent = '验证成功！';
     configStatus.style.color = 'var(--success)';
   } catch (error) {
     configStatus.textContent = `验证失败：${error.message}`;
