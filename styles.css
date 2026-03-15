@@ -60,6 +60,20 @@ label {
   font-size: 14px;
 }
 
+.grid-form > * {
+  min-width: 0;
+}
+
+.grid-form .full-row {
+  grid-column: 1 / -1;
+}
+
+input[type="file"] {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+
 input,
 button {
   border: 1px solid var(--border);
