@@ -24,6 +24,20 @@ node server.js
 - `POST /api/images/upload`
 - `GET /api/tasks`
 
+## API 调用示例
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/harbor/config \
+  -H 'Content-Type: application/json' \
+  -d '{"harborUrl":"https://harbor.example.com","project":"library","username":"admin","password":"***"}'
+
+curl -X POST http://127.0.0.1:8080/api/images/sync \
+  -H 'Content-Type: application/json' \
+  -d '{"sourceImage":"docker.io/library/nginx:1.27","targetRepo":"library/nginx","targetTag":"1.27"}'
+
+curl http://127.0.0.1:8080/api/tasks
+```
+
 ## 生产化建议
 
 1. 将 Harbor 凭据改为安全存储（如 Vault/KMS）。
