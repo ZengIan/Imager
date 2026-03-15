@@ -107,13 +107,14 @@ function updateTaskStatus(taskId, status, message = '') {
   }
 }
 
-function createTask(type, source, target) {
+function createTask(type, source, target, arch = 'all') {
   const task = {
     id: Date.now().toString(36),
     time: new Date().toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
     type,
     source,
     target,
+    arch,
     status: '待执行',
     logs: []
   };
@@ -221,14 +222,23 @@ async function tryConnect(harborUrl, username, password, authCheckPath, systemIn
   }
 }
 
+// 检查 skopeo 是否可用
+function checkSkopeo() {
+  return new Promise((resolve) => {
+    exec('which skopeo || echo "not found"', { encoding: 'utf8' }, (error, stdout) => {
+      resolve(!error && stdout.trim() !== 'not found');
+    });
+  });
+}
+
 async function tryDockerLogin(harborUrl, username, password) {
   return new Promise((resolve) => {
     const url = new URL(harborUrl);
     const registry = url.host;
 
-    log('INFO', `执行 Docker 登录验证: docker login -u ${username} -p *** ${registry}`);
-
     const command = `docker login -u ${username} -p ${password} ${registry}`;
+    const commandMasked = `docker login -u ${username} -p *** ${registry}`;
+    log('INFO', `执行 Docker 登录验证: ${commandMasked}`);
 
     exec(command, { encoding: 'utf8', timeout: 10000 }, (error, stdout, stderr) => {
       if (error) {
@@ -242,10 +252,17 @@ async function tryDockerLogin(harborUrl, username, password) {
   });
 }
 
-function executeCommand(command, taskId) {
+function executeCommand(command, taskId, hidePassword = false) {
   return new Promise((resolve, reject) => {
-    log('INFO', `执行命令: ${command}`);
-    addTaskLog(taskId, `执行: ${command}`);
+    // 隐藏密码：支持 -p password 和 --dest-creds username:password 格式
+    let displayCommand = command;
+    if (hidePassword) {
+      displayCommand = command.replace(/-p\s+\S+/g, '-p ***');
+    }
+    // 始终隐藏 --dest-creds 中的密码
+    displayCommand = displayCommand.replace(/--dest-creds\s+([^:]+):(\S+)/g, '--dest-creds $1:***');
+    log('INFO', `执行命令: ${displayCommand}`);
+    addTaskLog(taskId, `执行: ${displayCommand}`);
 
     exec(command, { encoding: 'utf8' }, (error, stdout, stderr) => {
       if (stdout) {
@@ -268,80 +285,246 @@ function executeCommand(command, taskId) {
   });
 }
 
-async function syncImage(taskId, sourceImage, targetProject, harborConfig) {
+async function syncImage(taskId, sourceImage, targetProject, harborConfig, arch = 'all') {
   try {
-    updateTaskStatus(taskId, '执行中', '开始拉取源镜像');
-    await executeCommand(`docker pull ${sourceImage}`, taskId);
+    updateTaskStatus(taskId, '执行中', '开始镜像同步');
 
     const imageParts = sourceImage.split(':');
     const imageWithoutTag = imageParts[0];
     const tag = imageParts.length > 1 ? imageParts[1] : 'latest';
-
-    updateTaskStatus(taskId, '执行中', '标记目标镜像');
     const targetImage = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${targetProject}/${imageWithoutTag.split('/').pop()}:${tag}`;
-    await executeCommand(`docker tag ${sourceImage} ${targetImage}`, taskId);
 
-    updateTaskStatus(taskId, '执行中', '登录到 Harbor');
-    const loginCmd = `docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborConfig.harborUrl.replace(/^https?:\/\//, '')}`;
-    const loginCmdMasked = `docker login -u ${harborConfig.username} -p *** ${harborConfig.harborUrl.replace(/^https?:\/\//, '')}`;
-    log('INFO', `执行命令: ${loginCmdMasked}`);
-    addTaskLog(taskId, `执行: ${loginCmdMasked}`);
-    await executeCommand(loginCmd, taskId);
+    // 检查 skopeo 是否可用
+    const hasSkopeo = await checkSkopeo();
 
-    updateTaskStatus(taskId, '执行中', '推送到 Harbor');
-    await executeCommand(`docker push ${targetImage}`, taskId);
+    if (hasSkopeo) {
+      // 使用 skopeo 直接复制镜像
+      updateTaskStatus(taskId, '执行中', `使用 skopeo 同步镜像 (架构: ${arch})`);
+      // skopeo --multi-arch 支持 'all', 'system', 'index-only'
+      // all: 复制所有架构, system: 复制系统当前架构
+      const archOption = arch === 'all' ? '--multi-arch=all' : '--multi-arch=system';
+      const skopeoCmd = `skopeo copy ${archOption} docker://${sourceImage} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --src-tls-verify=false --dest-tls-verify=false`;
+      await executeCommand(skopeoCmd, taskId);
+    } else {
+      // 降级使用 docker 命令
+      log('WARN', 'skopeo 未安装，降级使用 docker 命令');
+      addTaskLog(taskId, '警告: skopeo 未安装，使用 docker 命令');
+
+      updateTaskStatus(taskId, '执行中', '拉取源镜像');
+      await executeCommand(`docker pull ${sourceImage}`, taskId);
+
+      updateTaskStatus(taskId, '执行中', '标记目标镜像');
+      await executeCommand(`docker tag ${sourceImage} ${targetImage}`, taskId);
+
+      updateTaskStatus(taskId, '执行中', '登录到 Harbor');
+      const loginCmd = `docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborConfig.harborUrl.replace(/^https?:\/\//, '')}`;
+      await executeCommand(loginCmd, taskId, true);
+
+      updateTaskStatus(taskId, '执行中', '推送到 Harbor');
+      await executeCommand(`docker push ${targetImage}`, taskId);
+    }
 
     updateTaskStatus(taskId, '完成', '镜像同步成功');
+    addTaskLog(taskId, '✅ 镜像同步成功完成');
+    log('INFO', `镜像同步任务成功完成: ${taskId}`);
   } catch (error) {
     updateTaskStatus(taskId, '失败', error.message);
+    addTaskLog(taskId, `❌ 镜像同步失败: ${error.message}`);
   }
 }
 
-async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig) {
+// 从 tar 包中提取 manifest.json 并解析镜像列表
+async function extractManifestFromTar(tarPath) {
+  return new Promise((resolve, reject) => {
+    const extractDir = path.join(path.dirname(tarPath), 'temp_' + Date.now());
+    fs.mkdirSync(extractDir, { recursive: true });
+    
+    // 解压 manifest.json
+    exec(`tar -xf "${tarPath}" -C "${extractDir}" manifest.json`, (error) => {
+      if (error) {
+        // 可能是 .tar.gz 格式
+        exec(`tar -xzf "${tarPath}" -C "${extractDir}" manifest.json`, (error2) => {
+          if (error2) {
+            fs.rmSync(extractDir, { recursive: true, force: true });
+            reject(new Error('无法解压 manifest.json'));
+            return;
+          }
+          readManifest(extractDir);
+        });
+        return;
+      }
+      readManifest(extractDir);
+    });
+    
+    function readManifest(dir) {
+      try {
+        const manifestPath = path.join(dir, 'manifest.json');
+        if (!fs.existsSync(manifestPath)) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          reject(new Error('manifest.json 不存在'));
+          return;
+        }
+        const content = fs.readFileSync(manifestPath, 'utf8');
+        const manifest = JSON.parse(content);
+        fs.rmSync(dir, { recursive: true, force: true });
+        resolve(manifest);
+      } catch (e) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        reject(e);
+      }
+    }
+  });
+}
+
+async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch = 'all') {
   try {
     const tarFileName = path.basename(tarPath);
     log('INFO', `镜像导入任务开始: ${taskId}, tar文件: ${tarFileName}`);
     addTaskLog(taskId, `本地导入开始，文件: ${tarFileName}`);
 
-    updateTaskStatus(taskId, '执行中', '加载本地镜像包');
-    log('INFO', `执行 docker load -i ${tarFileName}`);
-    addTaskLog(taskId, `准备执行: docker load -i ${tarFileName}`);
-    await executeCommand(`docker load -i ${tarPath}`, taskId);
-
-    updateTaskStatus(taskId, '执行中', '标记目标镜像');
-    const imageName = path.basename(tarPath).replace(/\.tar(\.gz)?$/, '');
-    const targetImage = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${targetProject}/${imageName}:latest`;
-    log('INFO', `标记镜像: docker tag ${imageName} ${targetImage}`);
-    addTaskLog(taskId, `准备执行: docker tag ${imageName} ${targetImage}`);
-    await executeCommand(`docker tag ${imageName} ${targetImage}`, taskId);
-
-    updateTaskStatus(taskId, '执行中', '登录 Harbor 仓库');
-    const harborHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
-    log('INFO', `登录 Harbor: docker login -u ${harborConfig.username} -p *** ${harborHost}`);
-    addTaskLog(taskId, `准备执行: docker login -u ${harborConfig.username} -p *** ${harborHost}`);
-    await executeCommand(`docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborHost}`, taskId);
-
-    updateTaskStatus(taskId, '执行中', '推送到 Harbor');
-    log('INFO', `推送镜像: docker push ${targetImage}`);
-    addTaskLog(taskId, `准备执行: docker push ${targetImage}`);
-    await executeCommand(`docker push ${targetImage}`, taskId);
-
-    updateTaskStatus(taskId, '完成', '镜像导入成功');
-    addTaskLog(taskId, '本地导入完成');
-    log('INFO', `镜像导入任务完成: ${taskId}`);
-    
-    // 成功后删除 tar 包
+    // 尝试读取 manifest.json 获取镜像列表
+    let images = [];
     try {
-      if (fs.existsSync(tarPath)) {
-        fs.unlinkSync(tarPath);
-        log('INFO', `删除 tar 包: ${tarPath}`);
-      }
+      addTaskLog(taskId, '正在读取 tar 包中的镜像列表...');
+      const manifest = await extractManifestFromTar(tarPath);
+      log('INFO', `manifest.json 内容: ${JSON.stringify(manifest)}`);
+      
+      // manifest.json 是一个数组，每个元素可能有多个 RepoTags
+      images = manifest.map(item => item.RepoTags || []).flat().filter(tag => tag);
+      
+      log('INFO', `解析到 ${images.length} 个镜像: ${images.join(', ')}`);
+      addTaskLog(taskId, `检测到 ${images.length} 个镜像: ${images.join(', ')}`);
     } catch (e) {
-      log('WARN', `删除 tar 包失败: ${e.message}`);
+      log('WARN', `读取 manifest.json 失败: ${e.message}，将按单镜像处理`);
+      addTaskLog(taskId, `读取镜像列表失败: ${e.message}，按单镜像处理`);
+      // 回退到单镜像处理
+      images = [path.basename(tarPath).replace(/\.tar(\.gz)?$/, '') + ':latest'];
     }
+
+    // 检查 skopeo 是否可用
+    const hasSkopeo = await checkSkopeo();
+
+    if (hasSkopeo) {
+      // 使用 skopeo 直接从 tar 包推送
+      updateTaskStatus(taskId, '执行中', `使用 skopeo 推送 ${images.length} 个镜像 (架构: ${arch})`);
+      addTaskLog(taskId, `使用 skopeo 推送，共 ${images.length} 个镜像`);
+      
+      // skopeo --multi-arch 支持 'all', 'system', 'index-only'
+      const archOption = arch === 'all' ? '--multi-arch=all' : '--multi-arch=system';
+      const harborHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
+      
+      // 逐个推送每个镜像
+      for (let i = 0; i < images.length; i++) {
+        const imageName = images[i];
+        const imageTag = imageName.split(':').pop() || 'latest';
+        const imageRepo = imageName.split(':')[0].split('/').pop();
+        const targetImage = `${harborHost}/${targetProject}/${imageRepo}:${imageTag}`;
+        
+        addTaskLog(taskId, `[${i + 1}/${images.length}] 推送镜像: ${imageName} -> ${targetImage}`);
+        
+        // 使用 skopeo 从 docker-archive 推送单个镜像
+        // 需要指定 docker-archive:tarPath:imageName 格式
+        const skopeoCmd = `skopeo copy ${archOption} docker-archive:${tarPath}:${imageName} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
+        await executeCommand(skopeoCmd, taskId);
+      }
+    } else {
+      // 降级使用 docker 命令
+      log('WARN', 'skopeo 未安装，降级使用 docker 命令');
+      addTaskLog(taskId, '警告: skopeo 未安装，使用 docker 命令');
+
+      updateTaskStatus(taskId, '执行中', '加载本地镜像包');
+      log('INFO', `执行 docker load -i ${tarFileName}`);
+      addTaskLog(taskId, `准备执行: docker load -i ${tarFileName}`);
+      await executeCommand(`docker load -i ${tarPath}`, taskId);
+      addTaskLog(taskId, `成功加载 ${images.length} 个镜像`);
+
+      updateTaskStatus(taskId, '执行中', '登录 Harbor 仓库');
+      const harborHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
+      await executeCommand(`docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborHost}`, taskId, true);
+
+      // 逐个标记并推送每个镜像
+      for (let i = 0; i < images.length; i++) {
+        const imageName = images[i];
+        const imageTag = imageName.split(':').pop() || 'latest';
+        const imageRepo = imageName.split(':')[0].split('/').pop();
+        const targetImage = `${harborHost}/${targetProject}/${imageRepo}:${imageTag}`;
+        
+        addTaskLog(taskId, `[${i + 1}/${images.length}] 标记并推送: ${imageName} -> ${targetImage}`);
+        
+        updateTaskStatus(taskId, '执行中', `推送镜像 ${i + 1}/${images.length}`);
+        await executeCommand(`docker tag ${imageName} ${targetImage}`, taskId);
+        await executeCommand(`docker push ${targetImage}`, taskId);
+      }
+    }
+
+    updateTaskStatus(taskId, '完成', `镜像导入成功，共 ${images.length} 个镜像`);
+    addTaskLog(taskId, `✅ 镜像导入成功完成，共 ${images.length} 个镜像`);
+    log('INFO', `镜像导入任务成功完成: ${taskId}, 共 ${images.length} 个镜像`);
   } catch (error) {
     log('ERROR', `镜像导入任务失败: ${taskId}, 错误: ${error.message}`);
-    addTaskLog(taskId, `本地导入失败: ${error.message}`);
+    addTaskLog(taskId, `❌ 本地导入失败: ${error.message}`);
+    addTaskLog(taskId, 'tar 包已保留，可重新执行任务');
+    updateTaskStatus(taskId, '失败', error.message);
+  }
+}
+
+// 检测tar包格式
+function detectTarFormat(tarPath) {
+  try {
+    // 读取tar包的前几个字节来检测格式
+    const buffer = fs.readFileSync(tarPath, { length: 1024 });
+    const content = buffer.toString('utf8', 0, 1024);
+    
+    // OCI格式检查：查找oci-layout或manifest.json
+    if (content.includes('oci-layout') || content.includes('application/vnd.oci')) {
+      return 'oci';
+    }
+    
+    // Docker格式检查：查找manifest.json或repositories
+    if (content.includes('manifest.json') || content.includes('repositories')) {
+      return 'docker-archive';
+    }
+    
+    // 默认使用docker-archive（兼容docker save格式）
+    return 'docker-archive';
+  } catch (error) {
+    log('ERROR', `检测tar包格式失败: ${error.message}`);
+    return 'docker-archive';
+  }
+}
+
+// 使用skopeo上传镜像
+async function loadAndPushTarWithSkopeo(taskId, tarPath, targetProject, harborConfig) {
+  try {
+    const tarFileName = path.basename(tarPath);
+    log('INFO', `镜像导入任务开始(Skopeo): ${taskId}, tar文件: ${tarFileName}`);
+    addTaskLog(taskId, `本地导入开始(Skopeo)，文件: ${tarFileName}`);
+
+    updateTaskStatus(taskId, '执行中', '检测tar包格式');
+    const format = detectTarFormat(tarPath);
+    log('INFO', `检测到tar包格式: ${format}`);
+    addTaskLog(taskId, `检测到格式: ${format === 'oci' ? 'OCI多架构' : 'Docker单架构'}`);
+
+    updateTaskStatus(taskId, '执行中', '使用Skopeo复制镜像');
+    
+    const imageName = path.basename(tarPath).replace(/\.tar(\.gz)?$/, '');
+    const targetImage = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${targetProject}/${imageName}:latest`;
+    const harborHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
+    
+    // 构建skopeo命令
+    const skopeoCmd = `skopeo copy ${format}:${tarPath} docker://${targetImage} \
+      --dest-creds=${harborConfig.username}:${harborConfig.password} \
+      --dest-tls-verify=false \
+      ${format === 'oci' ? '--multi-arch=all' : ''}`;
+    
+    await executeCommand(skopeoCmd, taskId);
+
+    updateTaskStatus(taskId, '完成', '镜像导入成功');
+    addTaskLog(taskId, '✅ 镜像导入成功完成(Skopeo)');
+    log('INFO', `镜像导入任务成功完成(Skopeo): ${taskId}`);
+  } catch (error) {
+    log('ERROR', `镜像导入任务失败(Skopeo): ${taskId}, 错误: ${error.message}`);
+    addTaskLog(taskId, `本地导入失败(Skopeo): ${error.message}`);
     addTaskLog(taskId, 'tar 包已保留，可重新执行任务');
     updateTaskStatus(taskId, '失败', error.message);
   }
@@ -486,7 +669,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await parseJsonBody(req);
-      const { sourceImage, targetRepo, targetProject } = body;
+      const { sourceImage, targetRepo, targetProject, arch } = body;
       if (!sourceImage || !targetRepo || !targetProject) {
         sendJson(res, 400, { error: '缺少必填字段' });
         return;
@@ -502,10 +685,10 @@ const server = http.createServer(async (req, res) => {
       const imageWithoutTag = imageParts[0];
       const tag = imageParts.length > 1 ? imageParts[1] : 'latest';
       const target = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${targetProject}/${imageWithoutTag.split('/').pop()}:${tag}`;
-      const task = createTask('镜像同步', sourceImage, target);
-      
-      setImmediate(() => syncImage(task.id, sourceImage, targetProject, harborConfig));
-      
+      const task = createTask('镜像同步', sourceImage, target, arch || 'all');
+
+      setImmediate(() => syncImage(task.id, sourceImage, targetProject, harborConfig, arch || 'all'));
+
       sendJson(res, 200, { task });
       return;
     }
@@ -523,7 +706,8 @@ const server = http.createServer(async (req, res) => {
       const form = formidable({
         uploadDir: UPLOAD_DIR,
         keepExtensions: true,
-        maxFileSize: 10 * 1024 * 1024 * 1024,
+        maxFileSize: 30 * 1024 * 1024 * 1024, // 30GB
+        maxFieldsSize: 10 * 1024 * 1024, // 10MB for form fields
         filename: (name, ext, part, form) => {
           // 保留原始文件名
           return part.originalFilename;
@@ -541,8 +725,10 @@ const server = http.createServer(async (req, res) => {
         const file = Array.isArray(fileField) ? fileField[0] : fileField;
         const targetRepoField = fields.targetRepo;
         const importProjectField = fields.importProject;
+        const archField = fields.arch;
         const targetRepo = Array.isArray(targetRepoField) ? targetRepoField[0] : targetRepoField;
         const importProject = Array.isArray(importProjectField) ? importProjectField[0] : importProjectField;
+        const arch = Array.isArray(archField) ? archField[0] : archField || 'all';
 
         if (!file || !targetRepo || !importProject) {
           sendJson(res, 400, { error: '缺少必填字段' });
@@ -564,11 +750,11 @@ const server = http.createServer(async (req, res) => {
         }
 
         const target = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${importProject}/${originalFilename.replace(/\.tar(\.gz)?$/, '')}:latest`;
-        const task = createTask('本地导入', originalFilename, target);
-        log('INFO', `创建镜像导入任务: ${task.id}, 文件: ${originalFilename}, 目标: ${target}`);
-        addTaskLog(task.id, `创建本地导入任务，目标项目: ${importProject}`);
-        
-        setImmediate(() => loadAndPushTar(task.id, targetFilePath, importProject, harborConfig));
+        const task = createTask('本地导入', originalFilename, target, arch);
+        log('INFO', `创建镜像导入任务: ${task.id}, 文件: ${originalFilename}, 目标: ${target}, 架构: ${arch}`);
+        addTaskLog(task.id, `创建本地导入任务，目标项目: ${importProject}, 架构: ${arch}`);
+
+        setImmediate(() => loadAndPushTar(task.id, targetFilePath, importProject, harborConfig, arch));
 
         sendJson(res, 200, { task });
       });
@@ -577,10 +763,33 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'DELETE' && pathname.match(/^\/api\/tasks\/[a-z0-9]+$/)) {
       const taskId = pathname.split('/').pop();
+      const task = tasks.find(t => t.id === taskId);
+
+      if (!task) {
+        sendJson(res, 404, { error: '任务不存在' });
+        return;
+      }
+
+      // 如果是本地导入任务，删除对应的 tar 文件
+      let fileDeleted = false;
+      if (task.type === '本地导入') {
+        const tarFileName = task.source;
+        const tarPath = path.join(UPLOAD_DIR, tarFileName);
+        if (fs.existsSync(tarPath)) {
+          try {
+            fs.unlinkSync(tarPath);
+            fileDeleted = true;
+            log('INFO', `删除 tar 包: ${tarFileName}`);
+          } catch (e) {
+            log('ERROR', `删除 tar 包失败: ${e.message}`);
+          }
+        }
+      }
+
       tasks = tasks.filter(t => t.id !== taskId);
       saveTasks();
       log('INFO', `删除任务: ${taskId}`);
-      sendJson(res, 200, { message: '任务已删除' });
+      sendJson(res, 200, { message: '任务已删除', fileDeleted });
       return;
     }
 
@@ -613,12 +822,24 @@ const server = http.createServer(async (req, res) => {
         const harborConfig = harborConfigs.find(c => task.target.includes(c.harborUrl.replace(/^https?:\/\//, '')));
         if (harborConfig) {
           const targetProject = task.target.split('/')[1];
-          setImmediate(() => syncImage(taskId, task.source, targetProject, harborConfig));
+          setImmediate(() => syncImage(taskId, task.source, targetProject, harborConfig, task.arch || 'all'));
         }
       } else if (task.type === '本地导入') {
-        // 本地导入任务无法重新执行（因为 tar 包已删除）
-        sendJson(res, 400, { error: '本地导入任务无法重新执行，tar 包已被删除' });
-        return;
+        // 检查 tar 包是否存在
+        const tarFileName = task.source;
+        const tarPath = path.join(UPLOAD_DIR, tarFileName);
+        if (!fs.existsSync(tarPath)) {
+          sendJson(res, 400, { error: '本地导入任务无法重新执行，tar 包已被删除' });
+          return;
+        }
+        // 找到对应的 Harbor 配置
+        const harborConfig = harborConfigs.find(c => task.target.includes(c.harborUrl.replace(/^https?:\/\//, '')));
+        if (!harborConfig) {
+          sendJson(res, 400, { error: '未找到对应的 Harbor 配置' });
+          return;
+        }
+        const importProject = task.target.split('/')[1];
+        setImmediate(() => loadAndPushTar(taskId, tarPath, importProject, harborConfig, task.arch || 'all'));
       }
       
       sendJson(res, 200, { message: '任务已重新执行', task });

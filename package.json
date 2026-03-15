@@ -1,7 +1,7 @@
 {
   "name": "harbor-image-manager",
   "version": "1.0.0",
-  "description": "Harbor 镜像上传管理系统",
+  "description": "Imager 镜像游侠系统",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

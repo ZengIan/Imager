@@ -118,10 +118,11 @@ label {
   min-width: 160px;
 }
 
-/* 目标仓库和目标项目宽度更紧凑 */
+/* 目标仓库、目标项目和架构选择框宽度保持一致 */
 .inline-form label:has(select[name="targetRepo"]),
 .inline-form label:has(input[name="targetProject"]),
-.inline-form label:has(input[name="importProject"]) {
+.inline-form label:has(input[name="importProject"]),
+.inline-form label:has(select[name="arch"]) {
   flex: 0 0 auto;
   min-width: 140px;
   max-width: 180px;
@@ -137,6 +138,12 @@ label {
 
 .inline-form button {
   flex-shrink: 0;
+}
+
+/* 提交按钮统一样式 */
+.btn-submit {
+  width: 140px;
+  margin-left: 30px;
 }
 
 input[type="file"] {

@@ -1,0 +1,8 @@
+node_modules
+uploads/*.tar
+uploads/*.tar.gz
+*.log
+.DS_Store
+.git
+.gitignore
+README.md
