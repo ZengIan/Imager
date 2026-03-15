@@ -1,15 +1,10 @@
-const state = {
-  harborConfig: null,
-  tasks: []
-};
+const taskList = document.querySelector('#taskList');
+const configStatus = document.querySelector('#configStatus');
 
-const taskList = document.querySelector("#taskList");
-const configStatus = document.querySelector("#configStatus");
-
-function renderTasks() {
-  taskList.innerHTML = "";
-  for (const task of state.tasks) {
-    const tr = document.createElement("tr");
+function renderTasks(tasks) {
+  taskList.innerHTML = '';
+  for (const task of tasks) {
+    const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${task.time}</td>
       <td>${task.type}</td>
@@ -21,62 +16,79 @@ function renderTasks() {
   }
 }
 
-function pushTask(type, source, target, status = "已创建") {
-  state.tasks.unshift({
-    time: new Date().toLocaleString(),
-    type,
-    source,
-    target,
-    status
+async function request(url, payload) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
   });
-  renderTasks();
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || '请求失败');
+  }
+  return data;
 }
 
-document.querySelector("#harborForm").addEventListener("submit", (event) => {
+async function refreshTasks() {
+  const res = await fetch('/api/tasks');
+  const data = await res.json();
+  renderTasks(data.tasks || []);
+}
+
+document.querySelector('#harborForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const formData = new FormData(event.currentTarget);
-  state.harborConfig = {
-    harborUrl: formData.get("harborUrl"),
-    project: formData.get("project"),
-    username: formData.get("username"),
-    password: formData.get("password")
-  };
-  configStatus.textContent = `已保存 Harbor 配置：${state.harborConfig.harborUrl}/${state.harborConfig.project}`;
+  try {
+    const result = await request('/api/harbor/config', {
+      harborUrl: formData.get('harborUrl'),
+      project: formData.get('project'),
+      username: formData.get('username'),
+      password: formData.get('password')
+    });
+    configStatus.textContent = `已保存 Harbor 配置：${result.harbor}`;
+  } catch (error) {
+    configStatus.textContent = `保存失败：${error.message}`;
+  }
 });
 
-document.querySelector("#syncForm").addEventListener("submit", (event) => {
+document.querySelector('#syncForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!state.harborConfig) {
-    configStatus.textContent = "请先完成 Harbor 配置";
-    return;
-  }
-
   const formData = new FormData(event.currentTarget);
-  const sourceImage = formData.get("sourceImage");
-  const target = `${state.harborConfig.harborUrl.replace(/^https?:\/\//, "")}/${formData.get("targetRepo")}:${formData.get("targetTag")}`;
 
-  pushTask("公网同步", sourceImage, target);
-  event.currentTarget.reset();
+  try {
+    await request('/api/images/sync', {
+      sourceImage: formData.get('sourceImage'),
+      targetRepo: formData.get('targetRepo'),
+      targetTag: formData.get('targetTag')
+    });
+    event.currentTarget.reset();
+    await refreshTasks();
+  } catch (error) {
+    configStatus.textContent = `同步任务失败：${error.message}`;
+  }
 });
 
-document.querySelector("#uploadForm").addEventListener("submit", (event) => {
+document.querySelector('#uploadForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!state.harborConfig) {
-    configStatus.textContent = "请先完成 Harbor 配置";
-    return;
-  }
-
   const formData = new FormData(event.currentTarget);
-  const file = formData.get("imageTar");
-  const target = `${state.harborConfig.harborUrl.replace(/^https?:\/\//, "")}/${formData.get("importRepo")}:${formData.get("importTag")}`;
+  const file = formData.get('imageTar');
 
   if (!(file instanceof File) || !file.name) {
-    configStatus.textContent = "请选择有效的 tar 包";
+    configStatus.textContent = '请选择有效的 tar 包';
     return;
   }
 
-  pushTask("tar 导入", file.name, target);
-  event.currentTarget.reset();
+  try {
+    await request('/api/images/upload', {
+      fileName: file.name,
+      importRepo: formData.get('importRepo'),
+      importTag: formData.get('importTag')
+    });
+    event.currentTarget.reset();
+    await refreshTasks();
+  } catch (error) {
+    configStatus.textContent = `上传任务失败：${error.message}`;
+  }
 });
 
-renderTasks();
+refreshTasks();
