@@ -132,26 +132,36 @@ function addTaskLog(taskId, message) {
 }
 
 async function verifyHarborConnection(harborUrl, username, password) {
+  log('INFO', `开始验证 Harbor 连接: ${harborUrl}`);
+  
   // 尝试多个 API 路径
   const paths = ['/api/v2/systeminfo', '/api/systeminfo', '/harbor/api/v2/systeminfo'];
   
   for (const path of paths) {
+    log('INFO', `尝试 API 路径: ${path}`);
     const result = await tryConnect(harborUrl, username, password, path);
+    log('INFO', `路径 ${path} 结果: ${JSON.stringify(result)}`);
     if (result.success) {
       return result;
     }
   }
   
   // 如果 API 都失败，尝试直接验证 Docker 登录
+  log('INFO', 'API 路径都失败，尝试 Docker 登录验证');
   return await tryDockerLogin(harborUrl, username, password);
 }
 
 async function tryConnect(harborUrl, username, password, path) {
   return new Promise((resolve) => {
     const url = new URL(harborUrl);
+    const port = url.port || (url.protocol === 'https:' ? 443 : 80);
+    const protocol = url.protocol === 'https:' ? 'https' : 'http';
+    
+    log('INFO', `连接信息: ${protocol}://${url.hostname}:${port}${path}`);
+    
     const options = {
       hostname: url.hostname,
-      port: url.port || (url.protocol === 'https:' ? 443 : 80),
+      port: port,
       path: path,
       method: 'GET',
       headers: {
@@ -160,12 +170,14 @@ async function tryConnect(harborUrl, username, password, path) {
       rejectUnauthorized: false
     };
 
-    const request = url.protocol === 'https:' ? https.request : http.request;
+    const request = protocol === 'https' ? https.request : http.request;
 
     const req = request(options, (res) => {
       let data = '';
+      log('INFO', `收到响应状态码: ${res.statusCode}`);
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
+        log('INFO', `响应数据长度: ${data.length}`);
         if (res.statusCode === 200) {
           try {
             const info = JSON.parse(data);
@@ -180,6 +192,7 @@ async function tryConnect(harborUrl, username, password, path) {
     });
 
     req.on('error', (error) => {
+      log('ERROR', `请求错误: ${error.message}`);
       resolve({ success: false, error: error.message });
     });
 
@@ -386,6 +399,31 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, { success: true, version: result.version });
       } else {
         log('ERROR', `Harbor 连接验证失败: ${result.error}`);
+        sendJson(res, 400, { success: false, error: result.error });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/harbor/verify-saved') {
+      const body = await parseJsonBody(req);
+      const { name } = body;
+      if (!name) {
+        sendJson(res, 400, { error: '缺少仓库名称' });
+        return;
+      }
+
+      const config = harborConfigs.find(c => c.name === name);
+      if (!config) {
+        sendJson(res, 404, { error: '未找到该仓库配置' });
+        return;
+      }
+
+      const result = await verifyHarborConnection(config.harborUrl, config.username, config.password);
+      if (result.success) {
+        log('INFO', `Harbor 连接验证成功: ${config.name} - ${result.version}`);
+        sendJson(res, 200, { success: true, version: result.version });
+      } else {
+        log('ERROR', `Harbor 连接验证失败: ${config.name} - ${result.error}`);
         sendJson(res, 400, { success: false, error: result.error });
       }
       return;

@@ -97,10 +97,44 @@ function renderRepoList() {
         <span class="repo-url">${repo.harborUrl}</span>
         <span class="repo-user">${repo.username}</span>
       </div>
-      <button class="btn-small btn-delete" onclick="deleteRepo('${repo.name}')">删除</button>
+      <div class="repo-actions">
+        <button class="btn-small btn-verify" onclick="verifyRepo('${repo.name}')" id="verify-btn-${repo.name}">验证</button>
+        <button class="btn-small btn-delete" onclick="deleteRepo('${repo.name}')">删除</button>
+      </div>
     </div>
   `).join('');
 }
+
+window.verifyRepo = async function(repoName) {
+  const btn = document.querySelector(`#verify-btn-${repoName}`);
+  const originalText = btn.textContent;
+  btn.textContent = '验证中...';
+  btn.disabled = true;
+  
+  try {
+    const res = await fetch('/api/harbor/verify-saved', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: repoName })
+    });
+    
+    const data = await res.json();
+    
+    if (data.success) {
+      configStatus.textContent = `验证成功！${data.version}`;
+      configStatus.style.color = 'var(--success)';
+    } else {
+      configStatus.textContent = `验证失败：${data.error}`;
+      configStatus.style.color = '#ef4444';
+    }
+  } catch (error) {
+    configStatus.textContent = `验证失败：${error.message}`;
+    configStatus.style.color = '#ef4444';
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
+  }
+};
 
 window.deleteRepo = async function(repoName) {
   if (!confirm(`确定要删除仓库 "${repoName}" 吗？删除后将无法选择该仓库作为目标。`)) return;
