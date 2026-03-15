@@ -132,12 +132,27 @@ function addTaskLog(taskId, message) {
 }
 
 async function verifyHarborConnection(harborUrl, username, password) {
+  // 尝试多个 API 路径
+  const paths = ['/api/v2/systeminfo', '/api/systeminfo', '/harbor/api/v2/systeminfo'];
+  
+  for (const path of paths) {
+    const result = await tryConnect(harborUrl, username, password, path);
+    if (result.success) {
+      return result;
+    }
+  }
+  
+  // 如果 API 都失败，尝试直接验证 Docker 登录
+  return await tryDockerLogin(harborUrl, username, password);
+}
+
+async function tryConnect(harborUrl, username, password, path) {
   return new Promise((resolve) => {
     const url = new URL(harborUrl);
     const options = {
       hostname: url.hostname,
       port: url.port || (url.protocol === 'https:' ? 443 : 80),
-      path: '/api/v2/systeminfo',
+      path: path,
       method: 'GET',
       headers: {
         'Authorization': 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64')
@@ -168,12 +183,29 @@ async function verifyHarborConnection(harborUrl, username, password) {
       resolve({ success: false, error: error.message });
     });
 
-    req.setTimeout(15000, () => {
+    req.setTimeout(5000, () => {
       req.destroy();
       resolve({ success: false, error: '连接超时' });
     });
 
     req.end();
+  });
+}
+
+async function tryDockerLogin(harborUrl, username, password) {
+  return new Promise((resolve) => {
+    const url = new URL(harborUrl);
+    const registry = url.host;
+    
+    const command = `docker login -u ${username} -p ${password} ${registry}`;
+    
+    exec(command, { timeout: 10000 }, (error, stdout, stderr) => {
+      if (error) {
+        resolve({ success: false, error: 'Docker 登录失败，请检查地址和凭据' });
+      } else {
+        resolve({ success: true, version: 'Docker 登录成功' });
+      }
+    });
   });
 }
 
