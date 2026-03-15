@@ -121,7 +121,7 @@ window.verifyRepo = async function(repoName) {
     const data = await res.json();
     
     if (data.success) {
-      configStatus.textContent = `验证成功！${data.version}`;
+      configStatus.textContent = '验证成功！';
       configStatus.style.color = 'var(--success)';
     } else {
       configStatus.textContent = `验证失败：${data.error}`;

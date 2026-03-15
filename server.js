@@ -180,13 +180,14 @@ async function tryConnect(harborUrl, username, password, path) {
         log('INFO', `响应数据长度: ${data.length}`);
         if (res.statusCode === 200) {
           try {
+            // 验证返回的是否是有效的 JSON（认证成功才会返回 JSON 数据）
             const info = JSON.parse(data);
-            // 尝试多个可能的版本字段
-            const version = info.harbor_version || info['harbor-version'] || info.version || 'unknown';
-            log('INFO', `解析到的版本信息: ${JSON.stringify(info)}`);
-            resolve({ success: true, version: version });
+            log('INFO', `Harbor 验证成功，响应数据有效`);
+            resolve({ success: true });
           } catch {
-            resolve({ success: true, version: 'unknown' });
+            // 如果无法解析 JSON，说明可能返回的是登录页面或其他非认证成功的响应
+            log('WARN', `验证失败：响应不是有效的 JSON 数据`);
+            resolve({ success: false, error: '认证失败，请检查用户名和密码' });
           }
         } else {
           resolve({ success: false, error: `HTTP ${res.statusCode}` });
