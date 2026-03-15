@@ -134,26 +134,7 @@ function addTaskLog(taskId, message) {
 async function verifyHarborConnection(harborUrl, username, password) {
   log('INFO', `开始验证 Harbor 连接: ${harborUrl}`);
   
-  // 先做认证校验，再获取 systeminfo（避免仅因 systeminfo 返回 200 误判为成功）
-  const paths = [
-    { authCheckPath: '/harbor/api/v2.0/projects?page=1&page_size=1', systemInfoPath: '/harbor/api/v2/systeminfo' },
-    { authCheckPath: '/api/v2.0/projects?page=1&page_size=1', systemInfoPath: '/api/v2.0/systeminfo' }
-  ];
-  
-  for (const path of paths) {
-    log('INFO', `尝试认证路径: ${path.authCheckPath}`);
-    const result = await tryConnect(harborUrl, username, password, path.authCheckPath, path.systemInfoPath);
-    log('INFO', `认证路径 ${path.authCheckPath} 结果: ${JSON.stringify(result)}`);
-    if (result.success) {
-      return result;
-    }
-    if (result.authFailed) {
-      return { success: false, error: '认证失败，请检查用户名和密码' };
-    }
-  }
-  
-  // 如果 API 都失败，尝试直接验证 Docker 登录
-  log('INFO', 'API 路径都失败，尝试 Docker 登录验证');
+  // 直接使用 docker login 验证，最可靠
   return await tryDockerLogin(harborUrl, username, password);
 }
 
@@ -243,13 +224,17 @@ async function tryDockerLogin(harborUrl, username, password) {
     const url = new URL(harborUrl);
     const registry = url.host;
     
+    log('INFO', `执行 Docker 登录验证: docker login -u ${username} -p *** ${registry}`);
+    
     const command = `docker login -u ${username} -p ${password} ${registry}`;
     
     exec(command, { timeout: 10000 }, (error, stdout, stderr) => {
       if (error) {
-        resolve({ success: false, error: 'Docker 登录失败，请检查地址和凭据' });
+        log('ERROR', `Docker 登录失败: ${error.message}`);
+        resolve({ success: false, error: '认证失败，请检查用户名和密码' });
       } else {
-        resolve({ success: true, version: 'Docker 登录成功' });
+        log('INFO', 'Docker 登录验证成功');
+        resolve({ success: true });
       }
     });
   });
