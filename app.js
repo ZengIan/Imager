@@ -22,15 +22,16 @@ function renderTasks(tasks) {
     const statusClass = getStatusClass(task.status);
     
     const isSuccess = task.status === '完成';
+    const isFailed = task.status === '失败';
     tr.innerHTML = `
       <td>${task.time}</td>
       <td>${task.type}</td>
       <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${task.source}</td>
       <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${task.target}</td>
       <td><span class="status-badge ${statusClass}">${task.status}</span></td>
-      <td>
+      <td style="text-align: right;">
         <button class="btn-small btn-view" onclick="viewTask('${task.id}')">查看</button>
-        <button class="btn-small btn-retry" onclick="retryTask('${task.id}')" ${isSuccess ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''}>重新执行</button>
+        <button class="btn-small btn-retry" onclick="retryTask('${task.id}')" ${isSuccess ? 'disabled' : ''}>重新执行</button>
         <button class="btn-small btn-delete" onclick="deleteTask('${task.id}')">删除</button>
       </td>
     `;
