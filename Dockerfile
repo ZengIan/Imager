@@ -2,12 +2,13 @@
 FROM docker.1ms.run/library/node:18-alpine
 
 # 安装必要的系统工具
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     bash \
     curl \
     tar \
     skopeo \
-    gzip
+    gzip \
+    && rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app
@@ -16,7 +17,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # 安装依赖
-RUN npm ci --only=production
+RUN npm install
 
 # 复制应用代码
 COPY . .
