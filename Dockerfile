@@ -2,13 +2,12 @@
 FROM docker.1ms.run/library/node:18-alpine
 
 # 安装必要的系统工具
-RUN apt-get update && apt-get install -y \
+RUN apk add --no-cache \
     bash \
     curl \
     tar \
     skopeo \
-    gzip \
-    && rm -rf /var/lib/apt/lists/*
+    gzip
 
 # 设置工作目录
 WORKDIR /app
