@@ -1,11 +1,21 @@
 # Imager 镜像游侠 - 一站式容器镜像与文件传输管理平台
 # 支持功能: Harbor镜像管理、SFTP文件传输、本地镜像导入
 
-FROM docker.1ms.run/library/node:18-alpine
+FROM --platform=$BUILDPLATFORM docker.1ms.run/library/node:18-alpine
+
+# 注入 Buildx 自动提供的变量
+ARG TARGETPLATFORM
+ARG TARGETARCH
 
 LABEL maintainer="Imager"
 LABEL description="容器镜像与文件传输管理平台"
 LABEL version="2.0"
+
+# 设置时区
+ENV TZ=Asia/Shanghai
+
+# 配置 Alpine 阿里云镜像源（加速 apk 安装）
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 
 # 安装系统依赖
 # - bash: Shell 脚本支持
@@ -24,8 +34,14 @@ RUN apk add --no-cache \
 # 设置工作目录
 WORKDIR /app
 
-# 安装依赖
-RUN npm install
+# 配置 npm 淘宝镜像源
+RUN npm config set registry https://registry.npmmirror.com
+
+# 复制 package 文件，利用 Docker 缓存层
+COPY package*.json ./
+
+# 安装 Node.js 依赖
+RUN npm install --production
 
 # 复制应用代码
 COPY . .
