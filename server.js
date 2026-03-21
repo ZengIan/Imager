@@ -637,46 +637,163 @@ async function syncImage(taskId, sourceImage, targetProject, harborConfig, arch 
   }
 }
 
-// 从 tar 包中提取 manifest.json 并解析镜像列表
-async function extractManifestFromTar(tarPath) {
-  return new Promise((resolve, reject) => {
+// 检测 tar 包格式并解析镜像信息
+// 返回: { format: 'oci' | 'docker', images: string[] }
+async function detectTarFormatAndImages(tarPath) {
+  return new Promise((resolve) => {
     const extractDir = path.join(path.dirname(tarPath), 'temp_' + Date.now());
     fs.mkdirSync(extractDir, { recursive: true });
     
-    // 解压 manifest.json
-    exec(`tar -xf "${tarPath}" -C "${extractDir}" manifest.json`, (error) => {
-      if (error) {
-        // 可能是 .tar.gz 格式
-        exec(`tar -xzf "${tarPath}" -C "${extractDir}" manifest.json`, (error2) => {
-          if (error2) {
-            fs.rmSync(extractDir, { recursive: true, force: true });
-            reject(new Error('无法解压 manifest.json'));
-            return;
+    // 尝试解压 index.json（OCI 格式）
+    exec(`tar -xf "${tarPath}" -C "${extractDir}" index.json 2>/dev/null`, async (error) => {
+      if (!error && fs.existsSync(path.join(extractDir, 'index.json'))) {
+        // OCI 格式（多架构）
+        try {
+          const indexPath = path.join(extractDir, 'index.json');
+          const content = fs.readFileSync(indexPath, 'utf8');
+          const index = JSON.parse(content);
+          fs.rmSync(extractDir, { recursive: true, force: true });
+          
+          // 从 OCI index.json 提取镜像标签
+          const images = [];
+          if (index.manifests && Array.isArray(index.manifests)) {
+            // 尝试从 annotations 获取 tag
+            const tags = new Set();
+            for (const manifest of index.manifests) {
+              if (manifest.annotations) {
+                const refName = manifest.annotations['org.opencontainers.image.ref.name'] ||
+                               manifest.annotations['io.containerd.image.name'];
+                if (refName) {
+                  tags.add(refName);
+                }
+              }
+            }
+            // 如果没有 annotations，检查是否有引用名
+            if (tags.size === 0) {
+              // 尝试读取 oci-layout 或其他元数据
+              for (const manifest of index.manifests) {
+                if (manifest.annotations && manifest.annotations['org.opencontainers.image.base.name']) {
+                  tags.add(manifest.annotations['org.opencontainers.image.base.name']);
+                }
+              }
+            }
+            images.push(...Array.from(tags));
           }
-          readManifest(extractDir);
-        });
+          
+          resolve({ format: 'oci', images });
+        } catch (e) {
+          fs.rmSync(extractDir, { recursive: true, force: true });
+          resolve({ format: 'oci', images: [] });
+        }
         return;
       }
-      readManifest(extractDir);
-    });
-    
-    function readManifest(dir) {
-      try {
-        const manifestPath = path.join(dir, 'manifest.json');
-        if (!fs.existsSync(manifestPath)) {
-          fs.rmSync(dir, { recursive: true, force: true });
-          reject(new Error('manifest.json 不存在'));
+      
+      // 尝试解压 manifest.json（Docker 格式）
+      exec(`tar -xf "${tarPath}" -C "${extractDir}" manifest.json 2>/dev/null`, (error2) => {
+        if (!error2 && fs.existsSync(path.join(extractDir, 'manifest.json'))) {
+          try {
+            const manifestPath = path.join(extractDir, 'manifest.json');
+            const content = fs.readFileSync(manifestPath, 'utf8');
+            const manifest = JSON.parse(content);
+            fs.rmSync(extractDir, { recursive: true, force: true });
+            // Docker 格式需要从 manifest 获取镜像名
+            const images = manifest.map(item => item.RepoTags || []).flat().filter(tag => tag);
+            resolve({ format: 'docker', images });
+          } catch (e) {
+            fs.rmSync(extractDir, { recursive: true, force: true });
+            resolve({ format: 'docker', images: [] });
+          }
           return;
         }
-        const content = fs.readFileSync(manifestPath, 'utf8');
-        const manifest = JSON.parse(content);
-        fs.rmSync(dir, { recursive: true, force: true });
-        resolve(manifest);
-      } catch (e) {
-        fs.rmSync(dir, { recursive: true, force: true });
-        reject(e);
+        
+        // 都不是，返回未知格式
+        fs.rmSync(extractDir, { recursive: true, force: true });
+        resolve({ format: 'unknown', images: [] });
+      });
+    });
+  });
+}
+
+// 从 OCI 格式 tar 包中提取镜像信息
+// 返回: [{ name: 'imager', tag: 'v1.0-rc02', fullRef: 'docker.io/zengian/imager:v1.0-rc02' }]
+async function extractOciImageTags(tarPath) {
+  return new Promise((resolve) => {
+    const extractDir = path.join(path.dirname(tarPath), 'temp_tags_' + Date.now());
+    fs.mkdirSync(extractDir, { recursive: true });
+    
+    exec(`tar -xf "${tarPath}" -C "${extractDir}" index.json 2>/dev/null`, (error) => {
+      if (error || !fs.existsSync(path.join(extractDir, 'index.json'))) {
+        fs.rmSync(extractDir, { recursive: true, force: true });
+        resolve([]);
+        return;
       }
-    }
+      
+      try {
+        const indexPath = path.join(extractDir, 'index.json');
+        const content = fs.readFileSync(indexPath, 'utf8');
+        const index = JSON.parse(content);
+        
+        const images = [];
+        if (index.manifests && Array.isArray(index.manifests)) {
+          for (const manifest of index.manifests) {
+            if (manifest.annotations) {
+              // 优先使用 io.containerd.image.name（包含完整镜像引用）
+              const fullRef = manifest.annotations['io.containerd.image.name'];
+              const refName = manifest.annotations['org.opencontainers.image.ref.name'];
+              
+              if (fullRef) {
+                // 完整镜像引用格式: docker.io/zengian/imager:v1.0-rc02 或 imager:v1.0-rc02
+                const parts = fullRef.split(':');
+                const tag = parts.length > 1 ? parts.pop() : 'latest';
+                const repoPath = parts.join(':');
+                // 提取镜像名（最后一部分）
+                const name = repoPath.split('/').pop();
+                images.push({ name, tag, fullRef });
+              } else if (refName) {
+                // 只有标签，需要后续用文件名补充镜像名
+                images.push({ name: null, tag: refName, fullRef: refName });
+              }
+            }
+          }
+        }
+        
+        fs.rmSync(extractDir, { recursive: true, force: true });
+        resolve(images);
+      } catch (e) {
+        fs.rmSync(extractDir, { recursive: true, force: true });
+        resolve([]);
+      }
+    });
+  });
+}
+
+// 使用 skopeo inspect 获取 tar 包中的镜像列表
+async function inspectTarImages(tarPath, format) {
+  return new Promise((resolve) => {
+    const sourceType = format === 'oci' ? 'oci-archive' : 'docker-archive';
+    exec(`skopeo inspect --raw ${sourceType}:${tarPath} 2>/dev/null`, (error, stdout) => {
+      if (error) {
+        resolve([]);
+        return;
+      }
+      try {
+        const data = JSON.parse(stdout);
+        // 对于 index，尝试获取引用名
+        if (data.manifests) {
+          const images = [];
+          for (const m of data.manifests) {
+            if (m.annotations && m.annotations['org.opencontainers.image.ref.name']) {
+              images.push(m.annotations['org.opencontainers.image.ref.name']);
+            }
+          }
+          resolve(images);
+        } else {
+          resolve([]);
+        }
+      } catch (e) {
+        resolve([]);
+      }
+    });
   });
 }
 
@@ -686,51 +803,124 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
     log('INFO', `镜像导入任务开始: ${taskId}, tar文件: ${tarFileName}`);
     addTaskLog(taskId, `本地导入开始，文件: ${tarFileName}`);
 
-    // 尝试读取 manifest.json 获取镜像列表
-    let images = [];
-    try {
-      addTaskLog(taskId, '正在读取 tar 包中的镜像列表...');
-      const manifest = await extractManifestFromTar(tarPath);
-      log('INFO', `manifest.json 内容: ${JSON.stringify(manifest)}`);
-      
-      // manifest.json 是一个数组，每个元素可能有多个 RepoTags
-      images = manifest.map(item => item.RepoTags || []).flat().filter(tag => tag);
-      
-      log('INFO', `解析到 ${images.length} 个镜像: ${images.join(', ')}`);
-      addTaskLog(taskId, `检测到 ${images.length} 个镜像: ${images.join(', ')}`);
-    } catch (e) {
-      log('WARN', `读取 manifest.json 失败: ${e.message}，将按单镜像处理`);
-      addTaskLog(taskId, `读取镜像列表失败: ${e.message}，按单镜像处理`);
-      // 回退到单镜像处理
-      images = [path.basename(tarPath).replace(/\.tar(\.gz)?$/, '') + ':latest'];
-    }
-
+    // 检测 tar 包格式
+    addTaskLog(taskId, '正在检测 tar 包格式...');
+    const { format, images } = await detectTarFormatAndImages(tarPath);
+    
+    // 目标镜像名（从文件名推导）
+    const defaultImageName = path.basename(tarPath).replace(/\.tar(\.gz)?$/, '');
+    
     // 检查 skopeo 是否可用
     const hasSkopeo = await checkSkopeo();
 
     if (hasSkopeo) {
-      // 使用 skopeo 直接从 tar 包推送
-      updateTaskStatus(taskId, '执行中', `使用 skopeo 推送 ${images.length} 个镜像 (架构: ${arch})`);
-      addTaskLog(taskId, `使用 skopeo 推送，共 ${images.length} 个镜像`);
-      
-      // skopeo --multi-arch 支持 'all', 'system', 'index-only'
       const archOption = arch === 'all' ? '--multi-arch=all' : '--multi-arch=system';
       const harborHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
       
-      // 逐个推送每个镜像
-      for (let i = 0; i < images.length; i++) {
-        const imageName = images[i];
-        const imageTag = imageName.split(':').pop() || 'latest';
-        const imageRepo = imageName.split(':')[0].split('/').pop();
-        const targetImage = `${harborHost}/${targetProject}/${imageRepo}:${imageTag}`;
+      if (format === 'oci') {
+        // OCI 格式：使用 oci-archive，提取镜像标签
+        addTaskLog(taskId, `检测到 OCI 多架构格式`);
+        log('INFO', `tar 包格式: OCI`);
         
-        addTaskLog(taskId, `[${i + 1}/${images.length}] 推送镜像: ${imageName} -> ${targetImage}`);
+        // 尝试提取 OCI 镜像标签
+        const ociImages = await extractOciImageTags(tarPath);
         
-        // 使用 skopeo 从 docker-archive 推送单个镜像
-        // 需要指定 docker-archive:tarPath:imageName 格式
-        const skopeoCmd = `skopeo copy ${archOption} docker-archive:${tarPath}:${imageName} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
-        await executeCommand(skopeoCmd, taskId);
+        if (ociImages.length > 0) {
+          // 有明确的镜像信息，逐个推送
+          const imageRefs = ociImages.map(img => img.fullRef);
+          addTaskLog(taskId, `检测到 ${ociImages.length} 个镜像: ${imageRefs.join(', ')}`);
+          
+          const pushedImages = []; // 记录成功推送的镜像
+          
+          for (let i = 0; i < ociImages.length; i++) {
+            const imgInfo = ociImages[i];
+            // 优先使用提取的镜像名，否则使用文件名
+            const imageRepo = imgInfo.name || defaultImageName;
+            const imageTag = imgInfo.tag || 'latest';
+            const targetImage = `${harborHost}/${targetProject}/${imageRepo}:${imageTag}`;
+            
+            addTaskLog(taskId, `[${i + 1}/${ociImages.length}] 推送 -> ${targetImage}`);
+            
+            const skopeoCmd = `skopeo copy ${archOption} oci-archive:${tarPath} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
+            await executeCommand(skopeoCmd, taskId);
+            pushedImages.push(targetImage);
+          }
+          
+          // 显示完整的推送结果
+          const lastImage = pushedImages[pushedImages.length - 1];
+          const message = pushedImages.length === 1 
+            ? `${lastImage} 镜像导入成功`
+            : `镜像导入成功，共 ${pushedImages.length} 个镜像`;
+          updateTaskStatus(taskId, '完成', message);
+          addTaskLog(taskId, `✅ ${message}`);
+          log('INFO', `镜像导入任务成功完成: ${taskId}, ${message}`);
+        } else {
+          // 无明确 tag，使用文件名
+          const targetImage = `${harborHost}/${targetProject}/${defaultImageName}:latest`;
+          addTaskLog(taskId, `推送镜像 -> ${targetImage}`);
+          
+          const skopeoCmd = `skopeo copy ${archOption} oci-archive:${tarPath} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
+          await executeCommand(skopeoCmd, taskId);
+          
+          updateTaskStatus(taskId, '完成', `镜像导入成功: ${targetImage}`);
+          addTaskLog(taskId, `✅ 镜像导入成功完成: ${targetImage}`);
+          log('INFO', `镜像导入任务成功完成: ${taskId}, 目标: ${targetImage}`);
+        }
+        
+      } else if (format === 'docker' && images.length > 0) {
+        // Docker 格式：使用 docker-archive，需要指定镜像名
+        addTaskLog(taskId, `检测到 Docker 格式，共 ${images.length} 个镜像`);
+        log('INFO', `tar 包格式: Docker, 镜像: ${images.join(', ')}`);
+        
+        const pushedImages = []; // 记录成功推送的镜像
+        
+        for (let i = 0; i < images.length; i++) {
+          const imageName = images[i];
+          const imageTag = imageName.split(':').pop() || 'latest';
+          const imageRepo = imageName.split(':')[0].split('/').pop();
+          const targetImage = `${harborHost}/${targetProject}/${imageRepo}:${imageTag}`;
+          
+          addTaskLog(taskId, `[${i + 1}/${images.length}] 推送镜像: ${imageName} -> ${targetImage}`);
+          
+          const skopeoCmd = `skopeo copy ${archOption} docker-archive:${tarPath}:${imageName} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
+          await executeCommand(skopeoCmd, taskId);
+          pushedImages.push(targetImage);
+        }
+        
+        // Docker 格式成功消息
+        const lastImage = pushedImages[pushedImages.length - 1];
+        const message = pushedImages.length === 1 
+          ? `${lastImage} 镜像导入成功`
+          : `镜像导入成功，共 ${pushedImages.length} 个镜像`;
+        updateTaskStatus(taskId, '完成', message);
+        addTaskLog(taskId, `✅ ${message}`);
+        log('INFO', `镜像导入任务成功完成: ${taskId}, ${message}`);
+        
+      } else {
+        // 未知格式或无镜像名：尝试两种方式
+        addTaskLog(taskId, `未检测到明确格式，尝试 OCI 格式推送`);
+        log('INFO', `tar 包格式: 未知，尝试作为 OCI`);
+        
+        const targetImage = `${harborHost}/${targetProject}/${defaultImageName}:latest`;
+        
+        // 先尝试 OCI 格式
+        const skopeoCmdOci = `skopeo copy ${archOption} oci-archive:${tarPath} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
+        try {
+          await executeCommand(skopeoCmdOci, taskId);
+          updateTaskStatus(taskId, '完成', `镜像导入成功: ${targetImage}`);
+          addTaskLog(taskId, `✅ 镜像导入成功完成: ${targetImage}`);
+          log('INFO', `镜像导入任务成功完成: ${taskId}, 目标: ${targetImage}`);
+        } catch (e) {
+          // OCI 失败，尝试 Docker 格式
+          addTaskLog(taskId, `OCI 格式失败，尝试 Docker 格式`);
+          const skopeoCmdDocker = `skopeo copy ${archOption} docker-archive:${tarPath} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
+          await executeCommand(skopeoCmdDocker, taskId);
+          updateTaskStatus(taskId, '完成', `镜像导入成功: ${targetImage}`);
+          addTaskLog(taskId, `✅ 镜像导入成功完成: ${targetImage}`);
+          log('INFO', `镜像导入任务成功完成: ${taskId}, 目标: ${targetImage}`);
+        }
       }
+      return; // skopeo 处理完成，直接返回
     } else {
       // 降级使用 docker 命令
       log('WARN', 'skopeo 未安装，降级使用 docker 命令');
@@ -739,31 +929,47 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
       updateTaskStatus(taskId, '执行中', '加载本地镜像包');
       log('INFO', `执行 docker load -i ${tarFileName}`);
       addTaskLog(taskId, `准备执行: docker load -i ${tarFileName}`);
-      await executeCommand(`docker load -i ${tarPath}`, taskId);
-      addTaskLog(taskId, `成功加载 ${images.length} 个镜像`);
+      
+      // docker load 会输出加载的镜像名
+      const loadResult = await executeCommand(`docker load -i ${tarPath}`, taskId);
+      
+      // 如果 images 为空，从 docker load 输出解析镜像名
+      let loadedImages = images;
+      if (loadedImages.length === 0) {
+        // 解析 docker load 输出，格式: "Loaded image: xxx" 或 "Loaded image ID: sha256:xxx"
+        const loadedMatch = loadResult.match(/Loaded image:\s*(.+)/g);
+        if (loadedMatch) {
+          loadedImages = loadedMatch.map(m => m.replace('Loaded image: ', '').trim());
+        } else {
+          // 使用默认镜像名
+          loadedImages = [defaultImageName + ':latest'];
+        }
+        addTaskLog(taskId, `检测到 ${loadedImages.length} 个镜像: ${loadedImages.join(', ')}`);
+      }
 
       updateTaskStatus(taskId, '执行中', '登录 Harbor 仓库');
       const harborHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
       await executeCommand(`docker login -u ${harborConfig.username} -p ${harborConfig.password} ${harborHost}`, taskId, true);
 
       // 逐个标记并推送每个镜像
-      for (let i = 0; i < images.length; i++) {
-        const imageName = images[i];
+      for (let i = 0; i < loadedImages.length; i++) {
+        const imageName = loadedImages[i];
         const imageTag = imageName.split(':').pop() || 'latest';
         const imageRepo = imageName.split(':')[0].split('/').pop();
         const targetImage = `${harborHost}/${targetProject}/${imageRepo}:${imageTag}`;
         
-        addTaskLog(taskId, `[${i + 1}/${images.length}] 标记并推送: ${imageName} -> ${targetImage}`);
+        addTaskLog(taskId, `[${i + 1}/${loadedImages.length}] 标记并推送: ${imageName} -> ${targetImage}`);
         
-        updateTaskStatus(taskId, '执行中', `推送镜像 ${i + 1}/${images.length}`);
+        updateTaskStatus(taskId, '执行中', `推送镜像 ${i + 1}/${loadedImages.length}`);
         await executeCommand(`docker tag ${imageName} ${targetImage}`, taskId);
         await executeCommand(`docker push ${targetImage}`, taskId);
       }
+      
+      // Docker 分支成功消息
+      updateTaskStatus(taskId, '完成', `镜像导入成功，共 ${loadedImages.length} 个镜像`);
+      addTaskLog(taskId, `✅ 镜像导入成功完成，共 ${loadedImages.length} 个镜像`);
+      log('INFO', `镜像导入任务成功完成: ${taskId}, 共 ${loadedImages.length} 个镜像`);
     }
-
-    updateTaskStatus(taskId, '完成', `镜像导入成功，共 ${images.length} 个镜像`);
-    addTaskLog(taskId, `✅ 镜像导入成功完成，共 ${images.length} 个镜像`);
-    log('INFO', `镜像导入任务成功完成: ${taskId}, 共 ${images.length} 个镜像`);
   } catch (error) {
     // 隐藏错误信息中的密码
     let errorMessage = error.message;
