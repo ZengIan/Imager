@@ -827,8 +827,10 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
         
         if (ociImages.length > 0) {
           // 有明确的镜像信息，逐个推送
-          const imageRefs = ociImages.map(img => img.fullRef);
-          addTaskLog(taskId, `检测到 ${ociImages.length} 个镜像: ${imageRefs.join(', ')}`);
+          addTaskLog(taskId, `检测到 ${ociImages.length} 个镜像:`);
+          for (const img of ociImages) {
+            addTaskLog(taskId, `  - ${img.fullRef}`);
+          }
           
           const pushedImages = []; // 记录成功推送的镜像
           
@@ -841,7 +843,10 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
             
             addTaskLog(taskId, `[${i + 1}/${ociImages.length}] 推送 -> ${targetImage}`);
             
-            const skopeoCmd = `skopeo copy ${archOption} oci-archive:${tarPath} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
+            // 对于多镜像 OCI 归档，需要指定镜像引用（使用 tag）
+            // 格式: oci-archive:tarfile:image-ref
+            const imageRef = imgInfo.tag;
+            const skopeoCmd = `skopeo copy ${archOption} oci-archive:${tarPath}:${imageRef} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
             await executeCommand(skopeoCmd, taskId);
             pushedImages.push(targetImage);
           }
