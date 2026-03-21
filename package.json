@@ -7,12 +7,17 @@
     "start": "node server.js",
     "dev": "node server.js"
   },
-  "keywords": ["harbor", "docker", "image-management"],
+  "keywords": [
+    "harbor",
+    "docker",
+    "image-management"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "crypto-js": "^4.2.0",
     "formidable": "^3.5.1",
-    "crypto-js": "^4.2.0"
+    "multer": "^2.1.1"
   },
   "engines": {
     "node": ">=18.0.0"

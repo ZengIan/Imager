@@ -1,25 +1,98 @@
-# 配置文件（包含敏感信息）
+# ==================== 敏感配置 ====================
+# Harbor 配置（加密存储，但不应提交）
 config.json
+
+# SFTP 配置（包含服务器凭据）
+sftp-configs.json
+
+# Rclone 配置（包含远程存储凭据）
+rclone.conf
+
+# ==================== 任务数据 ====================
+# Harbor 任务记录
 tasks.json
 
-# 日志文件
+# SFTP 任务记录
+sftp-tasks.json
+
+# ==================== 日志文件 ====================
 app.log
 *.log
+logs/
 
-# 上传的镜像文件
+# ==================== 上传文件 ====================
+# 上传临时目录
 uploads/
+
+# 镜像包文件
 *.tar
 *.tar.gz
+*.tgz
 
-# 依赖目录
+# ==================== 依赖目录 ====================
 node_modules/
+package-lock.json
 
+# ==================== 构建产物 ====================
 # 打包生成的二进制文件
 imager-server
+dist/
+build/
 
-# 运行时数据
+# Docker 相关
+.docker/
+
+# ==================== 运行时数据 ====================
 data/
+.cache/
+.temp/
+tmp/
 
-# 系统文件
+# ==================== IDE 和编辑器 ====================
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ==================== 系统文件 ====================
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# ==================== 其他 ====================
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+
+# 备份文件
+*.bak
+*.backup
+*.swp
+*.swo
+
+# 压缩文件（排除源码压缩包）
+*.zip
+*.rar
+*.7z

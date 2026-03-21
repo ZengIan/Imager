@@ -7,17 +7,20 @@ const path = require('path');
 const { exec } = require('child_process');
 const { formidable } = require('formidable');
 const CryptoJS = require('crypto-js');
+const rclone = require('./rclone');
 
 const PORT = process.env.PORT || 8080;
 const ROOT = __dirname;
 const CONFIG_FILE = path.join(ROOT, 'config.json');
 const TASKS_FILE = path.join(ROOT, 'tasks.json');
+const SFTP_TASKS_FILE = path.join(ROOT, 'sftp-tasks.json');
 const UPLOAD_DIR = path.join(ROOT, 'uploads');
 
 const SECRET_KEY = 'harbor-manager-secret-key-change-in-production';
 
 let harborConfigs = [];
 let tasks = [];
+let sftpUploadTasks = new Map(); // SFTP 上传任务状态
 
 function loadConfig() {
   try {
@@ -57,6 +60,80 @@ function saveTasks() {
     fs.writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2));
   } catch (error) {
     console.error('保存任务失败:', error.message);
+  }
+}
+
+function loadSftpTasks() {
+  try {
+    if (fs.existsSync(SFTP_TASKS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SFTP_TASKS_FILE, 'utf8'));
+      const allTasks = new Map(data);
+      
+      // 只加载未完成的任务（uploading 状态）
+      sftpUploadTasks = new Map();
+      for (const [id, task] of allTasks) {
+        if (task.status === 'uploading') {
+          // 解密密码
+          if (task.config && task.config.password) {
+            try {
+              const decrypted = CryptoJS.AES.decrypt(task.config.password, SECRET_KEY);
+              task.config.password = decrypted.toString(CryptoJS.enc.Utf8);
+            } catch (e) {
+              log('WARN', `解密任务密码失败: ${task.id}`);
+            }
+          }
+          // 重置运行时状态
+          task._uploadRunning = false;
+          task._stopUploading = false;
+          task.processedFiles = new Set();
+          sftpUploadTasks.set(id, task);
+        }
+      }
+      
+      // 清理已完成/失败的任务记录
+      if (sftpUploadTasks.size < allTasks.size) {
+        const filteredData = Array.from(sftpUploadTasks.entries());
+        fs.writeFileSync(SFTP_TASKS_FILE, JSON.stringify(filteredData, null, 2));
+        log('INFO', `清理了 ${allTasks.size - sftpUploadTasks.size} 个已完成/失败的 SFTP 任务记录`);
+      }
+      
+      log('INFO', `加载了 ${sftpUploadTasks.size} 个进行中的 SFTP 上传任务`);
+    }
+  } catch (error) {
+    console.error('加载 SFTP 任务失败:', error.message);
+    sftpUploadTasks = new Map();
+  }
+}
+
+function saveSftpTasks() {
+  try {
+    // 创建数据副本，加密密码，过滤内部字段
+    const data = Array.from(sftpUploadTasks.entries()).map(([id, task]) => {
+      const taskCopy = JSON.parse(JSON.stringify(task));
+      
+      // 删除内部状态字段（不需要持久化）
+      delete taskCopy._uploadRunning;
+      delete taskCopy._stopUploading;
+      delete taskCopy.processedFiles; // Set 无法正确序列化
+      
+      // 清理文件对象，只保留必要字段
+      if (taskCopy.files && Array.isArray(taskCopy.files.files)) {
+        taskCopy.files.files = taskCopy.files.files.map(f => ({
+          originalFilename: f.originalFilename,
+          filepath: f.filepath,
+          size: f.size
+        }));
+      }
+      
+      // 加密密码
+      if (taskCopy.config && taskCopy.config.password) {
+        taskCopy.config.password = CryptoJS.AES.encrypt(taskCopy.config.password, SECRET_KEY).toString();
+      }
+      return [id, taskCopy];
+    });
+    fs.writeFileSync(SFTP_TASKS_FILE, JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error('保存 SFTP 任务失败:', error.message);
   }
 }
 
@@ -124,6 +201,7 @@ function createTask(type, source, target, arch = 'all') {
 }
 
 function addTaskLog(taskId, message) {
+  // 更新任务列表中的日志
   const task = tasks.find(t => t.id === taskId);
   if (task) {
     task.logs.push({
@@ -131,6 +209,18 @@ function addTaskLog(taskId, message) {
       message
     });
     saveTasks();
+  }
+
+  // 同时更新 SFTP 上传任务的日志（如果存在）
+  const sftpTask = sftpUploadTasks.get(taskId);
+  if (sftpTask) {
+    const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    sftpTask.logs = sftpTask.logs || [];
+    sftpTask.logs.push(`[${timestamp}] ${message}`);
+    // 最多保留100条日志
+    if (sftpTask.logs.length > 100) {
+      sftpTask.logs = sftpTask.logs.slice(-100);
+    }
   }
 }
 
@@ -143,6 +233,155 @@ async function verifyHarborConnection(harborUrl, username, password) {
     return await trySkopeoLogin(harborUrl, username, password);
   }
   return await tryDockerLogin(harborUrl, username, password);
+}
+
+// 创建 Harbor 项目
+async function createHarborProject(config, projectName, isPublic = false) {
+  log('INFO', `开始创建 Harbor 项目: ${config.harborUrl}/${projectName} (${isPublic ? '公开' : '私有'})`);
+  
+  try {
+    // 1. 先检查项目是否已存在
+    const checkResult = await checkProjectExists(config, projectName);
+    if (checkResult.exists) {
+      return { success: false, error: `项目 "${projectName}" 已存在` };
+    }
+    
+    // 2. 创建项目
+    const createResult = await requestCreateProject(config, projectName, isPublic);
+    if (createResult.success) {
+      return { success: true };
+    } else {
+      return { success: false, error: createResult.error };
+    }
+  } catch (error) {
+    log('ERROR', `创建项目异常: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
+// 检查 Harbor 项目是否存在
+async function checkProjectExists(config, projectName) {
+  try {
+    const url = new URL(config.harborUrl);
+    const port = url.port || (url.protocol === 'https:' ? 443 : 80);
+    
+    const apiPath = `/api/v2.0/projects/${encodeURIComponent(projectName)}`;
+    
+    const options = {
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: port,
+      path: apiPath,
+      method: 'HEAD',
+      headers: {
+        'Authorization': 'Basic ' + Buffer.from(`${config.username}:${config.password}`).toString('base64')
+      },
+      rejectUnauthorized: false
+    };
+    
+    const result = await requestWithRedirect(options, null);
+    
+    if (result.statusCode === 200) {
+      return { exists: true };
+    } else {
+      return { exists: false };
+    }
+  } catch (error) {
+    return { exists: false };
+  }
+}
+
+// 执行 HTTP 请求并跟随重定向
+function requestWithRedirect(options, postData = null, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    const makeRequest = (currentOptions, currentPostData, remainingRedirects) => {
+      const protocol = currentOptions.port === 443 ? https : http;
+      
+      const req = protocol.request(currentOptions, (res) => {
+        // 处理重定向
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && remainingRedirects > 0) {
+          const redirectUrl = new URL(res.headers.location, `${currentOptions.protocol}//${currentOptions.hostname}:${currentOptions.port}`);
+          const newOptions = {
+            hostname: redirectUrl.hostname,
+            port: redirectUrl.port || (redirectUrl.protocol === 'https:' ? 443 : 80),
+            path: redirectUrl.pathname + redirectUrl.search,
+            method: currentOptions.method,
+            headers: currentOptions.headers,
+            rejectUnauthorized: false
+          };
+          makeRequest(newOptions, currentPostData, remainingRedirects - 1);
+          return;
+        }
+        
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          resolve({ statusCode: res.statusCode, data });
+        });
+      });
+      
+      req.on('error', (error) => {
+        reject(error);
+      });
+      
+      req.setTimeout(10000, () => {
+        req.destroy();
+        reject(new Error('请求超时'));
+      });
+      
+      if (currentPostData) {
+        req.write(currentPostData);
+      }
+      req.end();
+    };
+    
+    makeRequest(options, postData, maxRedirects);
+  });
+}
+
+// 请求创建 Harbor 项目
+async function requestCreateProject(config, projectName, isPublic = false) {
+  try {
+    const url = new URL(config.harborUrl);
+    const port = url.port || (url.protocol === 'https:' ? 443 : 80);
+    
+    const apiPath = '/api/v2.0/projects';
+    
+    const postData = JSON.stringify({
+      project_name: projectName,
+      metadata: {
+        public: isPublic ? 'true' : 'false'
+      }
+    });
+    
+    const options = {
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: port,
+      path: apiPath,
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + Buffer.from(`${config.username}:${config.password}`).toString('base64'),
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      },
+      rejectUnauthorized: false
+    };
+    
+    const result = await requestWithRedirect(options, postData);
+    
+    if (result.statusCode === 201) {
+      return { success: true };
+    } else if (result.statusCode === 409) {
+      return { success: false, error: '项目已存在' };
+    } else if (result.statusCode === 401 || result.statusCode === 403) {
+      return { success: false, error: '权限不足，请检查用户权限' };
+    } else {
+      return { success: false, error: `创建失败 (HTTP ${result.statusCode})` };
+    }
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 }
 
 // 使用 skopeo 验证 Harbor 连接
@@ -161,7 +400,19 @@ function trySkopeoLogin(harborUrl, username, password) {
         // 隐藏错误信息中的密码
         const errorMessage = error.message.replace(/--password\s+\S+/g, '--password ***');
         log('ERROR', `skopeo 登录失败: ${errorMessage}`);
-        resolve({ success: false, error: '认证失败，请检查用户名和密码' });
+        
+        // 区分超时/网络错误和认证错误
+        if (error.killed || error.signal === 'SIGTERM' || 
+            errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT') ||
+            errorMessage.includes('No such host') || errorMessage.includes('connection refused') ||
+            errorMessage.includes('i/o timeout')) {
+          resolve({ success: false, error: '请求超时，请检查网络连接或 Harbor 地址是否正确' });
+        } else if (errorMessage.includes('401') || errorMessage.includes('unauthorized') || 
+                   errorMessage.includes('authentication') || errorMessage.includes('denied')) {
+          resolve({ success: false, error: '认证失败，请检查用户名和密码' });
+        } else {
+          resolve({ success: false, error: '连接失败，请检查 Harbor 地址和网络' });
+        }
       } else {
         log('INFO', 'skopeo 登录验证成功');
         resolve({ success: true });
@@ -274,7 +525,19 @@ async function tryDockerLogin(harborUrl, username, password) {
         // 隐藏错误信息中的密码
         const errorMessage = error.message.replace(/-p\s+\S+/g, '-p ***');
         log('ERROR', `Docker 登录失败: ${errorMessage}`);
-        resolve({ success: false, error: '认证失败，请检查用户名和密码' });
+        
+        // 区分超时/网络错误和认证错误
+        if (error.killed || error.signal === 'SIGTERM' || 
+            errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT') ||
+            errorMessage.includes('No such host') || errorMessage.includes('connection refused') ||
+            errorMessage.includes('i/o timeout') || errorMessage.includes('Cannot connect')) {
+          resolve({ success: false, error: '请求超时，请检查网络连接或 Harbor 地址是否正确' });
+        } else if (errorMessage.includes('401') || errorMessage.includes('unauthorized') || 
+                   errorMessage.includes('authentication') || errorMessage.includes('denied')) {
+          resolve({ success: false, error: '认证失败，请检查用户名和密码' });
+        } else {
+          resolve({ success: false, error: '连接失败，请检查 Harbor 地址和网络' });
+        }
       } else {
         log('INFO', 'Docker 登录验证成功');
         resolve({ success: true });
@@ -673,7 +936,6 @@ const server = http.createServer(async (req, res) => {
 
       const result = await verifyHarborConnection(harborUrl, username, password);
       if (result.success) {
-        log('INFO', `Harbor 连接验证成功: ${result.version}`);
         sendJson(res, 200, { success: true, version: result.version });
       } else {
         log('ERROR', `Harbor 连接验证失败: ${result.error}`);
@@ -698,11 +960,41 @@ const server = http.createServer(async (req, res) => {
 
       const result = await verifyHarborConnection(config.harborUrl, config.username, config.password);
       if (result.success) {
-        log('INFO', `Harbor 连接验证成功: ${config.name} - ${result.version}`);
         sendJson(res, 200, { success: true, version: result.version });
       } else {
         log('ERROR', `Harbor 连接验证失败: ${config.name} - ${result.error}`);
         sendJson(res, 400, { success: false, error: result.error });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/harbor/project') {
+      const body = await parseJsonBody(req);
+      const { repoName, projectName, isPublic } = body;
+      
+      if (!repoName || !projectName) {
+        sendJson(res, 400, { error: '缺少仓库名称或项目名称' });
+        return;
+      }
+
+      const config = harborConfigs.find(c => c.name === repoName);
+      if (!config) {
+        sendJson(res, 404, { error: '未找到该仓库配置' });
+        return;
+      }
+
+      try {
+        const result = await createHarborProject(config, projectName, isPublic);
+        if (result.success) {
+          log('INFO', `创建 Harbor 项目成功: ${config.harborUrl}/${projectName} (${isPublic ? '公开' : '私有'})`);
+          sendJson(res, 200, { success: true, message: '项目创建成功' });
+        } else {
+          log('ERROR', `创建 Harbor 项目失败: ${result.error}`);
+          sendJson(res, 400, { error: result.error });
+        }
+      } catch (error) {
+        log('ERROR', `创建 Harbor 项目异常: ${error.message}`);
+        sendJson(res, 500, { error: error.message });
       }
       return;
     }
@@ -806,7 +1098,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === 'DELETE' && pathname.match(/^\/api\/tasks\/[a-z0-9]+$/)) {
+    if (req.method === 'DELETE' && pathname.match(/^\/api\/tasks\/[\w]+$/)) {
       const taskId = pathname.split('/').pop();
       const task = tasks.find(t => t.id === taskId);
 
@@ -833,12 +1125,41 @@ const server = http.createServer(async (req, res) => {
 
       tasks = tasks.filter(t => t.id !== taskId);
       saveTasks();
+      
+      // 同时删除 SFTP 上传任务记录（如果存在）
+      if (sftpUploadTasks.has(taskId)) {
+        const sftpTask = sftpUploadTasks.get(taskId);
+        // 停止正在运行的上传
+        if (sftpTask) {
+          sftpTask._stopUploading = true;
+          sftpTask.status = 'cancelled';
+          // 触发所有取消信号终止 rclone 进程
+          let terminatedCount = 0;
+          if (sftpTask._cancelSignals && sftpTask._cancelSignals.length > 0) {
+            for (const signal of sftpTask._cancelSignals) {
+              if (signal && signal.onCancel) {
+                try {
+                  signal.onCancel();
+                  terminatedCount++;
+                } catch (e) {
+                  log('WARN', `终止 rclone 进程失败: ${e.message}`);
+                }
+              }
+            }
+          }
+          log('INFO', `已终止 ${terminatedCount} 个 rclone 进程: ${taskId}`);
+        }
+        sftpUploadTasks.delete(taskId);
+        saveSftpTasks();
+        log('INFO', `删除 SFTP 任务记录: ${taskId}`);
+      }
+      
       log('INFO', `删除任务: ${taskId}`);
       sendJson(res, 200, { message: '任务已删除', fileDeleted });
       return;
     }
 
-    if (req.method === 'POST' && pathname.match(/^\/api\/tasks\/[a-z0-9]+\/retry$/)) {
+    if (req.method === 'POST' && pathname.match(/^\/api\/tasks\/[\w]+\/retry$/)) {
       const taskId = pathname.split('/')[3];
       const task = tasks.find(t => t.id === taskId);
       
@@ -905,6 +1226,646 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ==================== Rclone SFTP 路由 ====================
+    
+    // 检查 rclone 是否已安装
+    if (req.method === 'GET' && pathname === '/api/rclone/status') {
+      const hasRclone = await rclone.checkRclone();
+      sendJson(res, 200, { installed: hasRclone });
+      return;
+    }
+    
+    // 获取所有 SFTP 配置
+    if (req.method === 'GET' && pathname === '/api/sftp/configs') {
+      const configs = rclone.loadAllSftpConfigs();
+      // 隐藏密码
+      const safeConfigs = configs.map(c => ({ ...c, password: c.password ? '***' : undefined, keyFile: c.keyFile ? '***' : undefined }));
+      sendJson(res, 200, { configs: safeConfigs });
+      return;
+    }
+    
+    // 保存 SFTP 配置
+    if (req.method === 'POST' && pathname === '/api/sftp/config') {
+      const body = await parseJsonBody(req);
+      const { name, host, port, username, password, keyFile } = body;
+      
+      if (!name || !host || !username) {
+        sendJson(res, 400, { error: '缺少必填字段' });
+        return;
+      }
+      
+      const config = { name, host, port: port || 22, username, password, keyFile };
+      await rclone.saveSftpConfig(config);
+      log('INFO', `保存 SFTP 配置: ${name}`);
+      
+      sendJson(res, 200, { message: '配置已保存', config: { ...config, password: config.password ? '***' : undefined } });
+      return;
+    }
+    
+    // 删除 SFTP 配置
+    if (req.method === 'DELETE' && pathname.match(/^\/api\/sftp\/config\/[^\/]+$/)) {
+      const configName = decodeURIComponent(pathname.split('/').pop());
+      await rclone.deleteSftpConfig(configName);
+      log('INFO', `删除 SFTP 配置: ${configName}`);
+      sendJson(res, 200, { message: '配置已删除' });
+      return;
+    }
+    
+    // 测试 SFTP 连接（使用前端传入的参数）
+    if (pathname === '/api/sftp/test' && req.method === 'POST') {
+      log('INFO', `收到 /api/sftp/test 请求，方法: ${req.method}`);
+      const body = await parseJsonBody(req);
+      const { host, port, username, password, keyFile } = body;
+      
+      if (!host || !username) {
+        sendJson(res, 400, { error: '缺少必填字段' });
+        return;
+      }
+      
+      const config = { name: 'test', host, port: port || 22, username, password, keyFile };
+      const result = await rclone.testSftpConnection(config);
+      
+      if (result.success) {
+        sendJson(res, 200, { success: true, message: '连接成功' });
+      } else {
+        sendJson(res, 400, { success: false, error: result.error });
+      }
+      return;
+    }
+    
+    // 测试已保存的 SFTP 配置
+    if (pathname.match(/^\/api\/sftp\/test\/[^\/]+$/) && req.method === 'GET') {
+      const configName = decodeURIComponent(pathname.split('/').pop());
+      log('INFO', `测试已保存的 SFTP 配置: ${configName}`);
+      
+      const configs = rclone.loadAllSftpConfigs();
+      const config = configs.find(c => c.name === configName);
+      
+      if (!config) {
+        sendJson(res, 404, { error: '配置不存在' });
+        return;
+      }
+      
+      const result = await rclone.testSftpConnection(config);
+      
+      if (result.success) {
+        sendJson(res, 200, { success: true, message: '连接成功' });
+      } else {
+        sendJson(res, 400, { success: false, error: result.error });
+      }
+      return;
+    }
+    
+    // 列出远程目录
+    if (req.method === 'POST' && pathname === '/api/sftp/list') {
+      const body = await parseJsonBody(req);
+      const { configName, remotePath } = body;
+      
+      const configs = rclone.loadAllSftpConfigs();
+      const config = configs.find(c => c.name === configName);
+      
+      if (!config) {
+        sendJson(res, 404, { error: '未找到该配置' });
+        return;
+      }
+      
+      const result = await rclone.listRemoteDirectory(config, remotePath || '/');
+      
+      if (result.success) {
+        sendJson(res, 200, { entries: result.entries });
+      } else {
+        sendJson(res, 400, { error: result.error });
+      }
+      return;
+    }
+
+    // 删除远程文件/目录
+    if (req.method === 'POST' && pathname === '/api/sftp/delete') {
+      const body = await parseJsonBody(req);
+      const { configName, remotePath, isDir } = body;
+
+      const configs = rclone.loadAllSftpConfigs();
+      const config = configs.find(c => c.name === configName);
+
+      if (!config) {
+        sendJson(res, 404, { error: '未找到该配置' });
+        return;
+      }
+
+      const result = await rclone.deleteRemoteFile(config, remotePath, isDir);
+
+      if (result.success) {
+        log('INFO', `删除远程文件: ${configName}:${remotePath}`);
+        sendJson(res, 200, { success: true, message: '删除成功' });
+      } else {
+        sendJson(res, 400, { error: result.error });
+      }
+      return;
+    }
+
+    // SFTP 上传任务初始化（预创建任务以支持刷新恢复）
+    if (req.method === 'POST' && pathname === '/api/sftp/upload-init') {
+      let body = '';
+      req.on('data', chunk => body += chunk);
+      req.on('end', () => {
+        try {
+          const { configName, remotePath, verifyHash, totalFiles } = JSON.parse(body);
+          const configs = rclone.loadAllSftpConfigs();
+          const config = configs.find(c => c.name === configName);
+
+          if (!config) {
+            sendJson(res, 400, { error: 'SFTP配置不存在' });
+            return;
+          }
+
+          // 创建任务ID
+          const taskId = `sftp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+          // 添加到任务列表（用于显示在任务列表中）
+          const task = {
+            id: taskId,
+            type: 'sftp文件',
+            source: `${totalFiles} 个文件`,
+            target: `${config.host}:${remotePath}`,
+            status: '执行中',
+            message: '正在上传文件到服务器...',
+            logs: [],
+            time: new Date().toLocaleString('zh-CN')
+          };
+          tasks.unshift(task);
+          saveTasks();
+
+          // 保存任务状态（初始状态，等待文件上传）
+          sftpUploadTasks.set(taskId, {
+            id: taskId,
+            status: 'uploading',
+            progress: 0,
+            message: '正在上传文件到服务器...',
+            details: '',
+            files: { files: [] },
+            config: config,
+            remotePath: remotePath,
+            verifyHash: verifyHash,
+            startTime: new Date(),
+            totalFiles: totalFiles,
+            uploadedFileCount: 0,
+            logs: [],
+            phase: 'browser-upload' // 标记为浏览器上传阶段
+          });
+          saveSftpTasks();
+
+          log('INFO', `预创建SFTP上传任务: ${taskId}, 配置: ${configName}, 远程路径: ${remotePath}`);
+          sendJson(res, 200, { taskId });
+        } catch (error) {
+          sendJson(res, 400, { error: '无效的请求数据' });
+        }
+      });
+      return;
+    }
+
+    // SFTP 检查已存在的文件（不完整的删除重新传）
+    if (req.method === 'POST' && pathname === '/api/sftp/check-existing') {
+      let body = '';
+      req.on('data', chunk => body += chunk);
+      req.on('end', () => {
+        try {
+          const { files } = JSON.parse(body);
+          const tempDir = path.join(UPLOAD_DIR, 'temp');
+          
+          const existingFiles = [];
+          const missingFiles = [];
+          
+          for (const file of files) {
+            const expectedPath = path.join(tempDir, path.basename(file.name));
+            if (fs.existsSync(expectedPath)) {
+              const stat = fs.statSync(expectedPath);
+              if (stat.size === file.size && file.size > 0) {
+                // 完全上传的文件
+                existingFiles.push(file.name);
+              } else {
+                // 文件不完整，删除重新传
+                try {
+                  fs.unlinkSync(expectedPath);
+                  log('INFO', `删除不完整的文件: ${file.name} (${stat.size}/${file.size} bytes)`);
+                } catch (e) {
+                  log('WARN', `删除不完整文件失败: ${file.name} - ${e.message}`);
+                }
+                missingFiles.push(file.name);
+              }
+            } else {
+              missingFiles.push(file.name);
+            }
+          }
+          
+          // 如果所有文件都已存在，尝试自动触发 SFTP 上传
+          if (missingFiles.length === 0 && existingFiles.length > 0) {
+            // 查找处于 browser-upload 阶段的任务
+            let targetTask = null;
+            let targetTaskId = null;
+            for (const [taskId, task] of sftpUploadTasks) {
+              if (task.phase === 'browser-upload' && task.status === 'uploading') {
+                targetTask = task;
+                targetTaskId = taskId;
+                break;
+              }
+            }
+            
+            if (targetTask) {
+              // 从 temp 目录收集文件信息
+              const existingFileInfos = [];
+              for (const filename of existingFiles) {
+                const filePath = path.join(tempDir, path.basename(filename));
+                if (fs.existsSync(filePath)) {
+                  const stat = fs.statSync(filePath);
+                  existingFileInfos.push({
+                    originalFilename: filename,
+                    filepath: filePath,
+                    size: stat.size
+                  });
+                }
+              }
+              
+              if (existingFileInfos.length > 0) {
+                // 更新任务文件列表
+                targetTask.files.files = existingFileInfos;
+                targetTask.uploadedFileCount = existingFileInfos.length;
+                targetTask.phase = 'server-upload';
+                saveSftpTasks();
+                log('INFO', `任务 ${targetTaskId} 自动启动 SFTP 上传（${existingFileInfos.length} 个文件来自 temp 目录）`);
+                // 异步执行上传
+                setImmediate(() => executeSftpUpload(targetTaskId));
+              }
+            }
+          }
+          
+          sendJson(res, 200, { existingFiles, missingFiles });
+        } catch (error) {
+          sendJson(res, 400, { error: '无效的请求数据' });
+        }
+      });
+      return;
+    }
+
+    // SFTP 文件上传
+    if (req.method === 'POST' && pathname === '/api/sftp/upload') {
+      const tempDir = path.join(UPLOAD_DIR, 'temp');
+      
+      // 确保临时目录存在
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+      const upload = require('multer')({ dest: tempDir });
+      
+      // 使用 formidable 处理文件上传
+      const form = formidable({
+        uploadDir: tempDir,
+        keepExtensions: true,
+        multiples: true,
+        maxFileSize: 30 * 1024 * 1024 * 1024, // 30GB 单个文件限制
+        maxTotalFileSize: 30 * 1024 * 1024 * 1024, // 30GB 总文件限制
+        filename: (name, ext, part, form) => {
+          // 只保留文件名，不保留路径（避免目录不存在的问题）
+          const originalName = part.originalFilename || `${Date.now()}-${name}`;
+          return path.basename(originalName);
+        }
+      });
+      
+      form.parse(req, async (err, fields, files) => {
+        if (err) {
+          log('ERROR', `文件上传失败: ${err.message}`);
+          sendJson(res, 400, { error: '文件上传失败: ' + err.message });
+          return;
+        }
+        
+        const configName = Array.isArray(fields.configName) ? fields.configName[0] : fields.configName;
+        const remotePath = Array.isArray(fields.remotePath) ? fields.remotePath[0] : fields.remotePath;
+        const verifyHash = (Array.isArray(fields.verifyHash) ? fields.verifyHash[0] : fields.verifyHash) === 'true';
+        const fileIndex = parseInt(Array.isArray(fields.fileIndex) ? fields.fileIndex[0] : fields.fileIndex) || 0;
+        const totalFiles = parseInt(Array.isArray(fields.totalFiles) ? fields.totalFiles[0] : fields.totalFiles) || 1;
+        const existingTaskId = Array.isArray(fields.taskId) ? fields.taskId[0] : fields.taskId; // 获取已有的taskId
+
+        if (!configName || !remotePath) {
+          sendJson(res, 400, { error: '缺少配置名称或远程路径' });
+          return;
+        }
+        
+        const configs = rclone.loadAllSftpConfigs();
+        const config = configs.find(c => c.name === configName);
+        
+        if (!config) {
+          sendJson(res, 404, { error: '未找到 SFTP 配置' });
+          return;
+        }
+
+        // 处理文件 - 检查是否已存在（断点续传场景）
+        const fileField = files.files;
+        const uploadedFiles = Array.isArray(fileField) ? fileField : [fileField];
+        const existingFiles = [];
+        const newFiles = [];
+        
+        for (const file of uploadedFiles) {
+          if (!file || !file.originalFilename) continue;
+          
+          const expectedPath = path.join(tempDir, path.basename(file.originalFilename));
+          
+          // 检查文件是否已存在且大小匹配
+          if (fs.existsSync(expectedPath)) {
+            const existingStat = fs.statSync(expectedPath);
+            const newFileSize = file.size || 0;
+            
+            if (existingStat.size === newFileSize && newFileSize > 0) {
+              // 文件已存在且大小一致，直接使用已有文件
+              log('INFO', `文件已存在且大小匹配，跳过上传: ${file.originalFilename} (${newFileSize} bytes)`);
+              existingFiles.push({
+                ...file,
+                filepath: expectedPath,
+                size: existingStat.size
+              });
+              // 删除临时上传的文件（如果不同路径）
+              if (file.filepath && file.filepath !== expectedPath && fs.existsSync(file.filepath)) {
+                try {
+                  fs.unlinkSync(file.filepath);
+                } catch (e) {}
+              }
+              continue;
+            }
+          }
+          
+          // 新文件或大小不匹配，使用新上传的文件
+          newFiles.push(file);
+        }
+        
+        // 合并文件列表（已有文件 + 新上传文件）
+        const allFiles = [...existingFiles, ...newFiles];
+        
+        if (allFiles.length === 0) {
+          sendJson(res, 400, { error: '没有有效的文件可上传' });
+          return;
+        }
+        
+        log('INFO', `文件上传处理: 新上传 ${newFiles.length} 个, 已存在 ${existingFiles.length} 个, 共 ${allFiles.length} 个文件, fileIndex=${fileIndex}, totalFiles=${totalFiles}`);
+        log('INFO', `文件列表: ${allFiles.map(f => f.originalFilename).join(', ')}`);
+        
+        // 确定任务ID
+        let taskId;
+        let isNewTask = false;
+        
+        // 优先使用预创建的任务ID
+        if (existingTaskId && sftpUploadTasks.has(existingTaskId)) {
+          taskId = existingTaskId;
+          const task = sftpUploadTasks.get(taskId);
+          // 更新任务文件列表（只保存必要的字段）
+          const currentFiles = Array.isArray(task.files.files) ? task.files.files : [];
+          const cleanFiles = allFiles.map(f => ({
+            originalFilename: f.originalFilename,
+            filepath: f.filepath,
+            size: f.size
+          }));
+          task.files.files = [...currentFiles, ...cleanFiles];
+          task.uploadedFileCount = task.files.files.length;
+          task.phase = 'server-upload'; // 切换到服务器上传阶段
+          saveSftpTasks();
+          log('INFO', `使用预创建任务 ${taskId}, 当前共 ${task.files.files.length} 个文件, 目标 ${task.totalFiles} 个`);
+          
+          // 流式上传：每个文件上传完成后立即开始 SFTP 上传（如果还没开始）
+          if (!task.sftpStarted) {
+            log('INFO', `文件上传完成，立即启动 SFTP 上传: ${taskId}`);
+            task.sftpStarted = true;
+            saveSftpTasks();
+            setImmediate(() => executeSftpUpload(taskId));
+          } else {
+            log('INFO', `SFTP 上传已在进行中，新文件将自动加入: ${taskId}`);
+          }
+        } else if (fileIndex === 0 || existingTaskId) {
+          // 第一个文件且没有预创建任务，或预创建任务不存在，创建新任务
+          taskId = existingTaskId || `sftp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          isNewTask = true;
+          
+          // 保存任务状态
+          // 只保存文件必要字段
+          const cleanFiles = allFiles.map(f => ({
+            originalFilename: f.originalFilename,
+            filepath: f.filepath,
+            size: f.size
+          }));
+          sftpUploadTasks.set(taskId, {
+            id: taskId,
+            status: 'uploading',
+            progress: 0,
+            message: '准备上传...',
+            details: '',
+            files: { files: cleanFiles },
+            config: config,
+            remotePath: remotePath,
+            verifyHash: verifyHash,
+            startTime: new Date(),
+            totalFiles: totalFiles,
+            uploadedFileCount: cleanFiles.length,
+            phase: 'server-upload'
+          });
+          saveSftpTasks();
+          
+          log('INFO', `创建新任务 ${taskId}`);
+          
+          // 异步执行上传
+          setImmediate(() => executeSftpUpload(taskId));
+        } else {
+          // 后续文件，查找最近创建的待处理任务
+          const pendingTasks = Array.from(sftpUploadTasks.values())
+            .filter(t => t.status === 'uploading' && t.config.name === configName)
+            .sort((a, b) => b.startTime - a.startTime);
+          
+          if (pendingTasks.length > 0) {
+            taskId = pendingTasks[0].id;
+            // 更新任务文件列表
+            const task = sftpUploadTasks.get(taskId);
+            const currentFiles = Array.isArray(task.files.files) ? task.files.files : [task.files.files];
+            task.files.files = [...currentFiles, ...allFiles];
+            task.uploadedFileCount = task.files.files.length;
+            saveSftpTasks();
+            log('INFO', `添加文件到现有任务 ${taskId}, 当前共 ${task.files.files.length} 个文件`);
+          } else {
+            // 找不到现有任务，创建新任务
+            taskId = `sftp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            isNewTask = true;
+            
+            sftpUploadTasks.set(taskId, {
+              id: taskId,
+              status: 'uploading',
+              progress: 0,
+              message: '准备上传...',
+              details: '',
+              files: { files: allFiles },
+              config: config,
+              remotePath: remotePath,
+              verifyHash: verifyHash,
+              startTime: new Date(),
+              totalFiles: totalFiles,
+              uploadedFileCount: allFiles.length,
+              phase: 'server-upload'
+            });
+            saveSftpTasks();
+            
+            setImmediate(() => executeSftpUpload(taskId));
+          }
+        }
+        
+        sendJson(res, 200, { 
+          taskId, 
+          message: isNewTask ? '上传任务已创建' : '文件已添加到任务',
+          skipped: existingFiles.length,
+          uploaded: newFiles.length
+        });
+      });
+      return;
+    }
+    
+    // 获取 SFTP 上传状态
+    if (req.method === 'GET' && pathname.match(/^\/api\/sftp\/upload-status\/[^\/]+$/)) {
+      const taskId = pathname.split('/').pop();
+      const task = sftpUploadTasks.get(taskId);
+      
+      if (!task) {
+        sendJson(res, 404, { error: '任务不存在' });
+        return;
+      }
+      
+      // 计算总速率
+      let totalSpeed = '';
+      if (task.status === 'uploading' && task.startTime) {
+        const elapsed = (Date.now() - task.startTime) / 1000;
+        const progress = task.progress || 0;
+        if (elapsed > 0 && progress > 0) {
+          // 估算总速度
+          totalSpeed = task.currentSpeed || '';
+        }
+      }
+      
+      // 构建文件列表及状态
+      const fileArray = Array.isArray(task.files.files) ? task.files.files : [];
+      
+      // 确保 fileStatuses 存在
+      if (!task.fileStatuses) {
+        task.fileStatuses = {};
+      }
+      
+      const fileStatusList = fileArray.map((f, idx) => {
+        const fileName = f.originalFilename || path.basename(f.filepath);
+        const fileSize = f.size || 0;
+        const fileKey = f.filepath || fileName;
+        
+        // 优先使用持久化的状态
+        let status = task.fileStatuses[fileKey]?.status || 'waiting';
+        let percent = task.fileStatuses[fileKey]?.percent || 0;
+        
+        // 如果没有持久化状态，则根据当前状态判断
+        if (!task.fileStatuses[fileKey]) {
+          if (task.processedFiles && task.processedFiles.has(f.filepath)) {
+            status = 'completed';
+            percent = 100;
+          } else if (task.currentFile === fileName) {
+            status = 'uploading';
+            percent = task.currentPercent || 0;
+          }
+        }
+        
+        return {
+          name: fileName,
+          size: fileSize,
+          status: status,
+          percent: percent
+        };
+      });
+      
+      sendJson(res, 200, {
+        status: task.status,
+        progress: task.progress,
+        message: task.message,
+        details: task.details,
+        speed: totalSpeed,
+        currentFile: task.currentFile,
+        uploadedFiles: task.uploadedFiles,
+        totalFiles: task.totalFiles,
+        logs: task.logs || [],
+        phase: task.phase || 'server-upload', // 返回任务阶段
+        files: fileStatusList // 返回文件列表及状态
+      });
+      
+      // 如果是 browser-upload 阶段但文件列表为空（所有文件都已存在），自动触发 SFTP 上传
+      if (task.phase === 'browser-upload' && (!task.files.files || task.files.files.length === 0)) {
+        const tempDir = path.join(UPLOAD_DIR, 'temp');
+        const existingFiles = [];
+        
+        // 遍历 temp 目录，收集所有文件
+        if (fs.existsSync(tempDir)) {
+          const files = fs.readdirSync(tempDir);
+          for (const file of files) {
+            const filePath = path.join(tempDir, file);
+            const stat = fs.statSync(filePath);
+            if (stat.isFile()) {
+              existingFiles.push({
+                originalFilename: file,
+                filepath: filePath,
+                size: stat.size
+              });
+            }
+          }
+        }
+        
+        if (existingFiles.length > 0) {
+          task.files.files = existingFiles;
+          task.uploadedFileCount = existingFiles.length;
+          task.phase = 'server-upload';
+          saveSftpTasks();
+          log('INFO', `任务 ${taskId} 启动 SFTP 上传（${existingFiles.length} 个文件来自 temp 目录）`);
+          setImmediate(() => executeSftpUpload(taskId));
+        }
+      }
+      
+      return;
+    }
+    
+    // 取消 SFTP 上传任务
+    if (req.method === 'POST' && pathname.match(/^\/api\/sftp\/upload-cancel\/[^\/]+$/)) {
+      const taskId = pathname.split('/').pop();
+      const task = sftpUploadTasks.get(taskId);
+      
+      if (!task) {
+        sendJson(res, 404, { error: '任务不存在' });
+        return;
+      }
+      
+      if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
+        sendJson(res, 400, { error: '任务已结束，无法取消' });
+        return;
+      }
+      
+      // 标记任务为取消状态
+      task.status = 'cancelled';
+      task.message = '用户取消上传';
+      addTaskLog(taskId, '用户取消上传');
+      
+      // 触发所有取消信号，杀死正在运行的 rclone 进程
+      if (task._cancelSignals && task._cancelSignals.length > 0) {
+        task._cancelSignals.forEach(signal => {
+          if (signal.onCancel) {
+            try {
+              signal.onCancel();
+            } catch (e) {
+              log('ERROR', `取消信号触发失败: ${e.message}`);
+            }
+          }
+        });
+        task._cancelSignals = [];
+      }
+      
+      log('INFO', `SFTP 上传任务已取消: ${taskId}`);
+      
+      sendJson(res, 200, { message: '任务已取消' });
+      return;
+    }
+
     if (req.method === 'GET') {
       serveFile(req, res, pathname);
       return;
@@ -919,9 +1880,338 @@ const server = http.createServer(async (req, res) => {
 
 loadConfig();
 loadTasks();
+loadSftpTasks();
 
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
+// 执行 SFTP 上传任务（流式上传，支持增量添加文件）
+async function executeSftpUpload(taskId) {
+  const task = sftpUploadTasks.get(taskId);
+  if (!task) return;
+  
+  // 防止重复启动
+  if (task._uploadRunning) return;
+  task._uploadRunning = true;
+
+  const { config, remotePath, verifyHash } = task;
+
+  try {
+    task.status = 'uploading';
+    task.message = '准备上传...';
+    task.progress = 0;
+    if (!task.logs) task.logs = [];
+    if (!task.uploadedFiles) task.uploadedFiles = 0;
+    if (!task.processedFiles) task.processedFiles = new Set(); // 已处理的文件集合
+    if (!task.startTime) task.startTime = Date.now();
+
+    // 更新任务列表状态
+    updateTaskStatus(taskId, '执行中', '准备上传...');
+
+    log('INFO', `SFTP 上传任务启动: ${taskId}`);
+    addTaskLog(taskId, `开始上传文件到 ${config.host}:${remotePath}`);
+    
+    // 并行上传控制（最多3个）
+    const MAX_CONCURRENT = 3;
+    const uploadQueue = [];
+    
+    // 持续检查新文件，直到所有文件都上传完成
+    while (!task._stopUploading) {
+      const fileArray = Array.isArray(task.files.files) ? task.files.files : [];
+      const processedFiles = task.processedFiles;
+      
+      // 找出尚未处理的新文件
+      const newFiles = fileArray.filter(f => f && f.filepath && !processedFiles.has(f.filepath));
+      
+      if (newFiles.length === 0) {
+        // 没有新文件，检查是否所有文件都已完成
+        const totalExpected = task.totalFiles || 0;
+        const currentCount = fileArray.length;
+        
+        // 如果已处理完所有文件且没有更多文件等待，退出循环
+        if (processedFiles.size >= currentCount && task.uploadedFiles >= totalExpected) {
+          break;
+        }
+        
+        // 等待新文件加入
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+      
+      // 更新总数显示
+      task.totalFiles = Math.max(task.totalFiles || 0, fileArray.length);
+      
+      // 处理新文件
+      for (const file of newFiles) {
+        if (!file || !file.filepath) continue;
+        
+        // 标记为已处理
+        processedFiles.add(file.filepath);
+        
+        const uploadPromise = uploadSingleFile(taskId, file, config, remotePath, verifyHash)
+          .then(() => {
+            // 上传成功后清理临时文件
+            if (file.filepath && fs.existsSync(file.filepath)) {
+              try {
+                fs.unlinkSync(file.filepath);
+                log('INFO', `清理临时文件: ${file.filepath}`);
+              } catch (e) {
+                log('WARN', `清理临时文件失败: ${file.filepath}`);
+              }
+            }
+          });
+        uploadQueue.push(uploadPromise);
+        
+        // 控制并发数
+        if (uploadQueue.length >= MAX_CONCURRENT) {
+          await Promise.all(uploadQueue);
+          uploadQueue.length = 0;
+        }
+      }
+      
+      // 短暂等待，让其他文件有机会加入
+      await new Promise(r => setTimeout(r, 100));
+    }
+    
+    // 等待剩余文件上传完成
+    if (uploadQueue.length > 0) {
+      await Promise.all(uploadQueue);
+    }
+    
+    // 检查是否所有文件都已处理
+    const fileArray = Array.isArray(task.files.files) ? task.files.files : [];
+    const allProcessed = fileArray.every(f => !f || !f.filepath || task.processedFiles.has(f.filepath));
+    
+    if (!allProcessed && !task._stopUploading) {
+      // 还有文件未处理，递归继续
+      task._uploadRunning = false;
+      return executeSftpUpload(taskId);
+    }
+    
+    const duration = ((Date.now() - task.startTime) / 1000).toFixed(1);
+    task.status = 'completed';
+    task.progress = 100;
+    task.message = `上传完成！共 ${task.uploadedFiles} 个文件`;
+    task.details = `耗时 ${duration} 秒`;
+    
+    // 更新任务列表状态
+    updateTaskStatus(taskId, '完成', `上传完成！共 ${task.uploadedFiles} 个文件，耗时 ${duration} 秒`);
+    addTaskLog(taskId, `上传完成，共 ${task.uploadedFiles} 个文件，耗时 ${duration} 秒`);
+    log('INFO', `SFTP 上传任务完成: ${taskId}, 共 ${task.uploadedFiles} 个文件，耗时 ${duration} 秒`);
+    
+    // 任务完成后延迟从内存中删除（保留 30 秒让前端能获取最终状态）
+    setTimeout(() => {
+      sftpUploadTasks.delete(taskId);
+      saveSftpTasks();
+      log('INFO', `SFTP 任务已从内存中清理: ${taskId}`);
+    }, 30000);
+    
+  } catch (error) {
+    task.status = 'failed';
+    task.message = '上传失败';
+    task.details = error.message;
+    saveSftpTasks();
+
+    // 更新任务列表状态
+    updateTaskStatus(taskId, '失败', `上传失败: ${error.message}`);
+    addTaskLog(taskId, `上传失败: ${error.message}`);
+    log('ERROR', `SFTP 上传任务失败: ${taskId} - ${error.message}`);
+  } finally {
+    task._uploadRunning = false;
+  }
+}
+
+// 上传单个文件
+async function uploadSingleFile(taskId, file, config, remotePath, verifyHash) {
+  const task = sftpUploadTasks.get(taskId);
+  if (!task) return;
+
+  // 检查任务是否被取消
+  if (task.status === 'cancelled') {
+    addTaskLog(taskId, '任务已取消，跳过上传');
+    return;
+  }
+
+  const localPath = file.filepath;
+  const originalName = file.originalFilename || path.basename(localPath);
+  const remoteFilePath = path.posix.join(remotePath, originalName).replace(/\\/g, '/');
+
+  const fileIndex = task.uploadedFiles + 1;
+
+  // 获取本地文件大小
+  const localSize = fs.statSync(localPath).size;
+
+  // 检查远程文件是否已存在
+  addTaskLog(taskId, `[${fileIndex}/${task.totalFiles}] 检查远程文件: ${originalName}`);
+  const remoteInfo = await rclone.checkRemoteFileExists(config, remoteFilePath);
+
+  if (remoteInfo.exists && remoteInfo.size === localSize) {
+    // 远程文件已存在且大小一致，跳过实际上传
+    addTaskLog(taskId, `[${fileIndex}/${task.totalFiles}] 远程文件已存在且大小一致，跳过上传: ${originalName} (${localSize} bytes)`);
+
+    // 更新进度
+    task.uploadedFiles++;
+    const completedProgress = task.uploadedFiles / task.totalFiles * 100;
+    task.progress = Math.round(completedProgress);
+    task.message = `已跳过: ${originalName}`;
+    task.details = `(${task.uploadedFiles}/${task.totalFiles}) - 已存在`;
+    
+    // 更新文件状态为已完成（已存在）
+    if (!task.fileStatuses) {
+      task.fileStatuses = {};
+    }
+    task.fileStatuses[fileKey] = {
+      name: originalName,
+      status: 'completed',
+      percent: 100,
+      size: localSize,
+      skipped: true
+    };
+
+    // 清理本地临时文件
+    try {
+      fs.unlinkSync(localPath);
+    } catch (e) {
+      log('WARN', `清理临时文件失败: ${localPath}`);
+    }
+
+    return;
+  }
+
+  addTaskLog(taskId, `[${fileIndex}/${task.totalFiles}] 开始上传: ${originalName}`);
+
+  // 确保 fileStatuses 存在
+  if (!task.fileStatuses) {
+    task.fileStatuses = {};
+  }
+  const fileKey = file.filepath;
+  
+  // 初始化文件状态
+  task.fileStatuses[fileKey] = {
+    name: originalName,
+    status: 'uploading',
+    percent: 0,
+    size: localSize
+  };
+
+  // 创建取消信号控制器（支持多个并发上传的取消）
+  if (!task._cancelSignals) {
+    task._cancelSignals = [];
+  }
+  const cancelSignal = { onCancel: null };
+  task._cancelSignals.push(cancelSignal);
+
+  try {
+    const result = await rclone.uploadFile(config, localPath, remoteFilePath, {
+      checkHash: verifyHash,
+      maxRetries: 3,
+      signal: cancelSignal,
+      onProgress: (progress) => {
+        // 检查任务是否被取消
+        if (task.status === 'cancelled' || task._stopUploading) {
+          return;
+        }
+
+        if (progress.type === 'progress') {
+          const speed = progress.speed || '';
+          const percent = progress.percent || 0;
+          const transferred = progress.transferred || '';
+          const total = progress.total || '';
+          task.currentSpeed = speed;
+          task.currentFile = originalName;
+          task.currentPercent = percent;
+          
+          // 更新文件状态
+          if (task.fileStatuses && task.fileStatuses[fileKey]) {
+            task.fileStatuses[fileKey].status = 'uploading';
+            task.fileStatuses[fileKey].percent = percent;
+          }
+
+          // 计算总进度
+          const completedProgress = task.uploadedFiles / task.totalFiles * 100;
+          const currentFileProgress = (percent / 100) * (100 / task.totalFiles);
+          task.progress = Math.round(completedProgress + currentFileProgress);
+
+          task.message = `上传中: ${originalName}`;
+          task.details = `${fileIndex}/${task.totalFiles} - ${percent}% - ${speed}`;
+          
+          // 添加进度日志（格式: 2.716 GiB / 7.161 GiB, 38%, 10.460 MiB/s）
+          // 限制日志频率，每5秒记录一次，避免日志过多
+          const lastLogTime = task._lastLogTime || 0;
+          const now = Date.now();
+          const shouldLog = (now - lastLogTime > 5000) || percent === 100 || percent === 0;
+          
+          if (shouldLog) {
+            task._lastLogTime = now;
+            
+            const progressLog = [];
+            if (transferred && total) {
+              progressLog.push(`${transferred} / ${total}`);
+            }
+            if (percent !== undefined && percent !== null) {
+              progressLog.push(`${percent}%`);
+            }
+            if (speed) {
+              progressLog.push(`${speed}`);
+            }
+            if (progressLog.length > 0) {
+              addTaskLog(taskId, `[${fileIndex}/${task.totalFiles}] ${originalName}: ${progressLog.join(', ')}`);
+            }
+          }
+        } else if (progress.type === 'verifying') {
+          addTaskLog(taskId, `[${fileIndex}/${task.totalFiles}] 验证完整性: ${originalName}`);
+        } else if (progress.type === 'verified') {
+          addTaskLog(taskId, `[${fileIndex}/${task.totalFiles}] 校验通过: ${originalName}`);
+        }
+      }
+    });
+
+    if (!result.success) {
+      throw new Error(result.error || '未知错误');
+    }
+
+    task.uploadedFiles++;
+    addTaskLog(taskId, `[${fileIndex}/${task.totalFiles}] 上传完成: ${originalName} ${result.hash ? '(校验通过)' : ''}`);
+    
+    // 更新文件状态为已完成
+    if (task.fileStatuses && task.fileStatuses[fileKey]) {
+      task.fileStatuses[fileKey].status = 'completed';
+      task.fileStatuses[fileKey].percent = 100;
+    }
+
+    // 清理临时文件
+    try {
+      fs.unlinkSync(localPath);
+    } catch (e) {
+      log('WARN', `清理临时文件失败: ${localPath}`);
+    }
+    
+    // 从取消信号列表中移除已完成的信号
+    if (task._cancelSignals) {
+      const index = task._cancelSignals.indexOf(cancelSignal);
+      if (index > -1) {
+        task._cancelSignals.splice(index, 1);
+      }
+    }
+
+  } catch (error) {
+    // 从取消信号列表中移除失败的信号
+    if (task._cancelSignals) {
+      const index = task._cancelSignals.indexOf(cancelSignal);
+      if (index > -1) {
+        task._cancelSignals.splice(index, 1);
+      }
+    }
+    
+    // 如果是取消导致的错误，不抛出异常
+    if (task.status === 'cancelled') {
+      addTaskLog(taskId, `[${fileIndex}/${task.totalFiles}] 上传已取消: ${originalName}`);
+      return;
+    }
+    addTaskLog(taskId, `[${fileIndex}/${task.totalFiles}] 上传失败: ${originalName} - ${error.message}`);
+    throw error;
+  }
 }
 
 server.listen(PORT, '0.0.0.0', () => {
