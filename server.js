@@ -849,16 +849,17 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
             const skopeoCmd = `skopeo copy ${archOption} oci-archive:${tarPath}:${imageRef} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
             await executeCommand(skopeoCmd, taskId);
             pushedImages.push(targetImage);
+            
+            // 每个镜像推送成功后立即输出日志
+            addTaskLog(taskId, `✅ ${targetImage} 镜像导入成功`);
           }
           
           // 显示完整的推送结果
-          const lastImage = pushedImages[pushedImages.length - 1];
           const message = pushedImages.length === 1 
-            ? `${lastImage} 镜像导入成功`
+            ? pushedImages[0]
             : `镜像导入成功，共 ${pushedImages.length} 个镜像`;
           updateTaskStatus(taskId, '完成', message);
-          addTaskLog(taskId, `✅ ${message}`);
-          log('INFO', `镜像导入任务成功完成: ${taskId}, ${message}`);
+          log('INFO', `镜像导入任务成功完成: ${taskId}, 共 ${pushedImages.length} 个镜像`);
         } else {
           // 无明确 tag，使用文件名
           const targetImage = `${harborHost}/${targetProject}/${defaultImageName}:latest`;
@@ -874,7 +875,10 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
         
       } else if (format === 'docker' && images.length > 0) {
         // Docker 格式：使用 docker-archive，需要指定镜像名
-        addTaskLog(taskId, `检测到 Docker 格式，共 ${images.length} 个镜像`);
+        addTaskLog(taskId, `检测到 Docker 格式，共 ${images.length} 个镜像:`);
+        for (const img of images) {
+          addTaskLog(taskId, `  - ${img}`);
+        }
         log('INFO', `tar 包格式: Docker, 镜像: ${images.join(', ')}`);
         
         const pushedImages = []; // 记录成功推送的镜像
@@ -885,21 +889,22 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
           const imageRepo = imageName.split(':')[0].split('/').pop();
           const targetImage = `${harborHost}/${targetProject}/${imageRepo}:${imageTag}`;
           
-          addTaskLog(taskId, `[${i + 1}/${images.length}] 推送镜像: ${imageName} -> ${targetImage}`);
+          addTaskLog(taskId, `[${i + 1}/${images.length}] 推送 -> ${targetImage}`);
           
           const skopeoCmd = `skopeo copy ${archOption} docker-archive:${tarPath}:${imageName} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
           await executeCommand(skopeoCmd, taskId);
           pushedImages.push(targetImage);
+          
+          // 每个镜像推送成功后立即输出日志
+          addTaskLog(taskId, `✅ ${targetImage} 镜像导入成功`);
         }
         
         // Docker 格式成功消息
-        const lastImage = pushedImages[pushedImages.length - 1];
         const message = pushedImages.length === 1 
-          ? `${lastImage} 镜像导入成功`
+          ? pushedImages[0]
           : `镜像导入成功，共 ${pushedImages.length} 个镜像`;
         updateTaskStatus(taskId, '完成', message);
-        addTaskLog(taskId, `✅ ${message}`);
-        log('INFO', `镜像导入任务成功完成: ${taskId}, ${message}`);
+        log('INFO', `镜像导入任务成功完成: ${taskId}, 共 ${pushedImages.length} 个镜像`);
         
       } else {
         // 未知格式或无镜像名：尝试两种方式
