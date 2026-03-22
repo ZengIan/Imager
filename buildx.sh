@@ -5,7 +5,7 @@
 set -e
 
 IMAGE="zengian/imager"
-VERSION=v1.0-rc02
+VERSION=$2
 
 # 安装 QEMU 支持（多架构必需）
 #docker run --privileged --rm tonistiigi/binfmt --install all
