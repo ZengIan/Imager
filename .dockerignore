@@ -6,3 +6,13 @@ uploads/*.tar.gz
 .git
 .gitignore
 README.md
+
+# 敏感配置文件
+config.json
+sftp-configs.json
+rclone.conf
+.env
+
+# 任务数据
+tasks.json
+sftp-tasks.json
