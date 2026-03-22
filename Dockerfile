@@ -51,6 +51,7 @@ RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # 设置默认环境变量（防止启动报错，默认指向回环地址或留空）
 ENV HARBOR_IP=""
+ENV HARBOR_DOMAIN="harbor.rise.io"
 
 # 设置启动入口
 ENTRYPOINT ["/app/entrypoint.sh"]
