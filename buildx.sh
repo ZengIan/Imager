@@ -1,6 +1,6 @@
 #!/bin/bash
 # Imager 多架构构建脚本
-# 用法: ./buildx.sh [push|load|save]
+# 用法: ./buildx.sh [push|load|save] VERSION
 
 set -e
 
