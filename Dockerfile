@@ -44,7 +44,16 @@ COPY package*.json ./
 RUN npm install --production
 
 # 复制应用代码
-COPY . .
+COPY . /app
+
+# 修复 Windows 换行符并设置执行权限
+RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
+# 设置默认环境变量（防止启动报错，默认指向回环地址或留空）
+ENV HARBOR_IP=""
+
+# 设置启动入口
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # 创建必要目录
 RUN mkdir -p uploads/temp
