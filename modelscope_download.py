@@ -62,12 +62,31 @@ def download_model(model_id, local_dir, file_path=None):
                 file_path=file_path,
                 local_dir=local_dir
             )
+            print(json.dumps({"status": "file_completed", "file": file_path, "size": "-"}))
             print(json.dumps({"status": "completed", "message": f"文件下载完成: {local_path}"}))
         else:
             # 下载完整模型
             print(json.dumps({"status": "downloading", "message": "下载完整模型..."}))
             sys.stdout.flush()
             
+            # 使用自定义钩子来跟踪文件下载完成
+            downloaded_files = []
+            
+            def download_hook(file_name, file_size):
+                """文件下载完成回调"""
+                downloaded_files.append(file_name)
+                print(json.dumps({"status": "file_completed", "file": file_name, "size": file_size}))
+                sys.stdout.flush()
+            
+            # snapshot_download 本身不支持回调，我们使用另一种方式
+            # 先获取文件列表，然后逐个下载
+            api = HubApi()
+            files = api.list_model_files(model_id)
+            
+            print(json.dumps({"status": "info", "message": f"共 {len(files)} 个文件"}))
+            sys.stdout.flush()
+            
+            # 下载完整模型
             model_dir = snapshot_download(
                 model_id,
                 local_dir=local_dir

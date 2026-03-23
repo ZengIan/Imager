@@ -1624,8 +1624,6 @@ const server = http.createServer(async (req, res) => {
             taskInfo.process = childProcess;
           }
           
-          let lastProgress = 0;
-          
           childProcess.stdout.on('data', (data) => {
             const output = stripAnsi(data.toString().trim());
             const lines = output.split('\n').filter(l => l.trim());
@@ -1636,33 +1634,23 @@ const server = http.createServer(async (req, res) => {
                 const jsonMatch = line.match(/^\{.*\}$/);
                 if (jsonMatch) {
                   const jsonData = JSON.parse(line);
-                  if (jsonData.status === 'downloading') {
-                    task.message = jsonData.message || '下载中...';
+                  if (jsonData.status === 'starting') {
+                    addTaskLog(taskId, jsonData.message);
+                  } else if (jsonData.status === 'info') {
+                    addTaskLog(taskId, jsonData.message);
+                  } else if (jsonData.status === 'file_completed') {
+                    // 文件下载完成，显示简洁日志
+                    addTaskLog(taskId, `✅ ${jsonData.file}`);
                   } else if (jsonData.status === 'completed') {
                     addTaskLog(taskId, `✅ ${jsonData.message}`);
                   } else if (jsonData.status === 'cancelled') {
                     addTaskLog(taskId, `⚠️ ${jsonData.message}`);
                   } else if (jsonData.error) {
                     addTaskLog(taskId, `❌ 错误: ${jsonData.error}`);
-                  } else {
-                    addTaskLog(taskId, jsonData.message || line);
                   }
-                } else {
-                  // 非 JSON 输出，直接记录
-                  if (line.includes('Downloading') || line.includes('downloading') || line.includes('%')) {
-                    // 尝试解析进度
-                    const progressMatch = line.match(/(\d+)%/);
-                    if (progressMatch) {
-                      const progress = parseInt(progressMatch[1]);
-                      if (progress !== lastProgress) {
-                        lastProgress = progress;
-                        task.progress = progress;
-                        task.message = `下载中... ${progress}%`;
-                      }
-                    }
-                    addTaskLog(taskId, line);
-                  }
+                  // 忽略其他中间状态日志
                 }
+                // 忽略非 JSON 输出，避免刷屏
               } catch (e) {
                 // JSON 解析失败，直接输出
                 if (line.trim()) {
