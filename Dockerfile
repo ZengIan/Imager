@@ -1,5 +1,5 @@
 # Imager 镜像游侠 - 一站式容器镜像与文件传输管理平台
-# 支持功能: Harbor镜像管理、SFTP文件传输、本地镜像导入
+# 支持功能: Harbor镜像管理、SFTP文件传输、ModelScope模型下载
 
 FROM --platform=$BUILDPLATFORM docker.1ms.run/library/node:18-alpine
 
@@ -9,7 +9,7 @@ ARG TARGETARCH
 
 LABEL maintainer="Imager"
 LABEL description="容器镜像与文件传输管理平台"
-LABEL version="2.0"
+LABEL version="1.0-stable"
 
 # 设置时区
 ENV TZ=Asia/Shanghai
@@ -21,6 +21,8 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 # - bash: Shell 脚本支持
 # - curl: HTTP 请求工具和健康检查
 # - tar/gzip: 镜像包解压
+# - python3: Python 运行时
+# - py3-pip: Python 包管理器
 # - skopeo: 镜像同步（支持多架构）
 # - rclone: SFTP 文件传输（内置 SSH 实现）
 RUN apk add --no-cache \
@@ -28,8 +30,13 @@ RUN apk add --no-cache \
     curl \
     tar \
     gzip \
+    python3 \
+    py3-pip \
     skopeo \
     rclone
+
+# 安装 Python 依赖
+RUN pip3 install --no-cache-dir --break-system-packages modelscope
 
 # 设置工作目录
 WORKDIR /app

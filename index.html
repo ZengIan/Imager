@@ -25,7 +25,7 @@
           </svg>
           <div class="logo-text">
             <h1>Imager 镜像游侠</h1>
-            <p>一站式容器镜像与文件传输管理平台，支持 Harbor 私有仓库管理和 SFTP 文件传输。</p>
+            <p>一站式容器镜像与文件传输管理平台，支持 Harbor 私有仓库管理、SFTP 文件传输和 ModelScope 模型下载。</p>
           </div>
         </div>
       </header>
@@ -241,19 +241,20 @@
               <option value="file">单个文件</option>
             </select>
           </label>
-          <label style="width: 240px !important; flex: 0 0 240px !important;">
+          <label style="width: 200px !important; flex: 0 0 200px !important;">
             模型 ID
             <input type="text" id="msModelId" placeholder="Qwen/Qwen3.5-27B" required style="width: 100%;" />
           </label>
-          <label id="msFileLabel" style="display: none; width: 240px !important; flex: 0 0 240px !important;">
-            文件路径
+          <label id="msFileLabel" style="display: none; width: 200px !important; flex: 0 0 200px !important;">
+            文件名称
             <input type="text" id="msFilePath" placeholder="README.md" style="width: 100%;" />
           </label>
-          <label style="width: 240px !important; flex: 0 0 240px !important;">
+          <label style="width: 200px !important; flex: 0 0 200px !important;">
             保存目录
             <input type="text" id="msLocalDir" placeholder="/models/Qwen3.5-27B" required style="width: 100%;" />
           </label>
           <button type="submit" class="btn-submit" style="min-width: 100px; padding: 10px 20px;">开始下载</button>
+          <button type="button" id="msCancelBtn" class="btn-cancel" style="display: none; min-width: 140px; padding: 10px 20px; margin-left: 10px; background: var(--error);">取消下载</button>
         </form>
         <!-- 下载进度 -->
         <div id="modelscopeProgress" style="display: none; margin-top: 16px;">

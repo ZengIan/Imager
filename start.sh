@@ -8,6 +8,8 @@ echo " Imager 镜像游侠管理工具"
 echo "================================"
 
 # 查找并停止占用 8080 端口的进程
+pkill -9 node
+sleep 2
 echo "检查端口 8080..."
 PID=$(lsof -ti:8080 2>/dev/null)
 if [ -n "$PID" ]; then

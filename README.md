@@ -1,6 +1,6 @@
 # Imager 镜像游侠
 
-一站式容器镜像与文件传输管理平台，支持 Harbor 私有仓库管理和 SFTP 文件传输。
+一站式容器镜像与文件传输管理平台，支持 Harbor 私有仓库管理、SFTP 文件传输和 ModelScope 模型下载。
 
 ## 功能特性
 
@@ -23,6 +23,14 @@
 - **实时进度**: 上传进度、速度、状态实时显示
 - **任务取消**: 随时取消正在进行的上传任务
 
+### 🤖 ModelScope 模型下载
+
+- **模型搜索下载**: 通过 ModelScope Hub 下载模型到本地
+- **完整/单文件下载**: 支持下载完整模型或指定单个文件
+- **断点续传**: 自动跳过已存在的文件
+- **任务取消**: 随时取消正在进行的下载任务
+- **实时进度**: 显示下载进度和状态
+
 ### 🎯 通用特性
 
 - **安全凭据**: Harbor/SFTP 凭据 AES 加密存储
@@ -33,10 +41,27 @@
 ## 系统要求
 
 - Node.js >= 18.0.0
-- Docker 或 Skopeo（镜像同步功能需要）
+- Skopeo（镜像同步功能需要）
 - Rclone（SFTP 传输功能需要）
+- Python >= 3.8 + modelscope（模型下载功能需要）
 
 ## 安装
+
+### 1. 安装系统依赖
+
+**Ubuntu/Debian:**
+```bash
+apt install -y skopeo rclone python3 python3-pip
+pip3 install modelscope --break-system-packages
+```
+
+**Alpine:**
+```bash
+apk add skopeo rclone python3 py3-pip
+pip3 install modelscope --break-system-packages
+```
+
+### 2. 安装应用
 
 ```bash
 git clone https://github.com/ZengIan/Imager.git
@@ -47,11 +72,13 @@ npm install
 ## 启动
 
 ### WSL 环境（推荐）
+
 ```bash
 bash start.sh
 ```
 
 ### 直接启动
+
 ```bash
 npm start
 ```
@@ -95,16 +122,24 @@ npm start
 - 删除文件或目录
 - 刷新目录列表
 
+### ModelScope 模型下载
+
+1. 填写 ModelScope 模型 ID（如 `Qwen/Qwen3.5-0.8B`）
+2. 填写本地保存目录
+3. 可选：填写单个文件路径以下载特定文件
+4. 点击"开始下载"，实时查看进度
+5. 点击"取消下载"可中断任务
+
 ## 技术架构
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     前端 (HTML/CSS/JS)                   │
+│                     前端 (HTML/CSS/JS)                  │
 ├─────────────────────────────────────────────────────────┤
-│                      后端 (Node.js)                      │
+│                      后端 (Node.js)                     │
 ├─────────────────┬─────────────────┬─────────────────────┤
-│   Docker CLI    │    Skopeo       │      Rclone         │
-│   (镜像导入)     │   (镜像同步)     │   (SFTP 传输)        │
+│     Skopeo      │      Rclone     │ Python + ModelScope │
+│   (镜像同步)     │   (SFTP 传输)   │     (模型下载)       │
 └─────────────────┴─────────────────┴─────────────────────┘
 ```
 
@@ -117,17 +152,20 @@ Imager/
 ├── styles.css          # 样式文件
 ├── server.js           # 后端服务器
 ├── rclone.js           # Rclone 封装模块
+├── modeldownload.py    # ModelScope 下载脚本
 ├── package.json        # 项目配置
 ├── start.sh            # WSL 启动脚本
 ├── Dockerfile          # Docker 构建文件
+├── entrypoint.sh       # Docker 入口脚本
+├── buildx.sh          # 多架构构建脚本
 │
 ├── config.json         # Harbor 配置 (加密存储)
-├── sftp-configs.json   # SFTP 配置 (加密存储)
-├── tasks.json          # Harbor 任务记录
-├── sftp-tasks.json     # SFTP 任务记录
+├── sftp-configs.json  # SFTP 配置 (加密存储)
+├── tasks.json          # 任务记录 (包含日志)
 ├── app.log             # 运行日志
-└── uploads/            # 上传临时目录
+└── uploads/           # 上传临时目录
 ```
+
 
 ## 生产部署
 
@@ -176,6 +214,14 @@ docker run -d -p 8080:8080 \
 | POST | `/api/sftp/list` | 列出远程目录 |
 | POST | `/api/sftp/delete` | 删除远程文件 |
 
+### ModelScope 相关
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/modelscope/download` | 创建下载任务 |
+| GET | `/api/modelscope/progress/:id` | 查询下载进度 |
+| POST | `/api/modelscope/cancel/:id` | 取消下载 |
+
 ### 任务管理
 
 | 方法 | 路径 | 说明 |
@@ -184,11 +230,8 @@ docker run -d -p 8080:8080 \
 | DELETE | `/api/tasks/:id` | 删除任务 |
 | POST | `/api/tasks/:id/retry` | 重试任务 |
 
-## 故障排查
 
-### Docker 命令失败
-- 确保 Docker 已安装且运行
-- 检查当前用户是否有 Docker 执行权限
+## 故障排查
 
 ### Skopeo 未找到
 - 安装 Skopeo: `apt install skopeo` (Debian/Ubuntu)
@@ -197,6 +240,10 @@ docker run -d -p 8080:8080 \
 ### Rclone 未找到
 - 安装 Rclone: `curl https://rclone.org/install.sh | sudo bash`
 - SFTP 功能依赖 Rclone，必须安装
+
+### ModelScope 下载失败
+- 安装 Python modelscope: `pip install modelscope`
+- 或使用用户级安装: `pip install modelscope --break-system-packages`
 
 ### SFTP 连接失败
 - 检查服务器地址和端口是否正确

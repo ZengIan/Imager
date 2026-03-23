@@ -49,7 +49,6 @@ document.addEventListener('DOMContentLoaded', function() {
   // 加载数据
   loadHarborRepos();
   refreshTasks();
-  loadServerLogs();
 });
 
 function renderTasks(tasks) {
@@ -67,6 +66,7 @@ function renderTasks(tasks) {
     const isSuccess = task.status === '完成';
     const isFailed = task.status === '失败';
     const isSftpFile = task.type === 'sftp文件';
+    const isModelDownload = task.type === '模型下载';
     
     // 本地导入任务显示目标项目时不带 tag
     const displayTarget = task.type === '本地导入' 
@@ -81,7 +81,7 @@ function renderTasks(tasks) {
       <td class="col-status"><span class="status-badge ${statusClass}">${task.status}</span></td>
       <td class="col-action">
         <button class="btn-small btn-view" onclick="viewTask('${task.id}')">查看</button>
-        ${!isSftpFile ? `<button class="btn-small btn-retry" onclick="retryTask('${task.id}')" ${isSuccess ? 'disabled' : ''}>重新执行</button>` : ''}
+        ${!isSftpFile && !isModelDownload ? `<button class="btn-small btn-retry" onclick="retryTask('${task.id}')" ${isSuccess ? 'disabled' : ''}>重新执行</button>` : ''}
         <button class="btn-small btn-delete" onclick="deleteTask('${task.id}')">删除</button>
       </td>
     `;
@@ -103,6 +103,22 @@ async function refreshTasks() {
     const res = await fetch('/api/tasks');
     const data = await res.json();
     renderTasks(data.tasks || []);
+
+    // 检查是否有正在执行的 ModelScope 下载任务
+    const msTask = data.tasks.find(t => t.type === '模型下载' && t.status === '执行中');
+    if (msTask) {
+      currentMsTaskId = msTask.id;
+      const cancelBtn = document.getElementById('msCancelBtn');
+      if (cancelBtn) {
+        cancelBtn.style.display = 'inline-block';
+        cancelBtn.textContent = '取消下载';
+        cancelBtn.disabled = false;
+      }
+      const progressDiv = document.getElementById('modelscopeProgress');
+      if (progressDiv) {
+        progressDiv.style.display = 'block';
+      }
+    }
   } catch (error) {
     console.error('刷新任务失败:', error);
   }
@@ -341,6 +357,13 @@ window.deleteTask = async function(taskId) {
   const res = await fetch('/api/tasks');
   const data = await res.json();
   const task = data.tasks.find(t => t.id === taskId);
+  
+  // 如果删除的是当前正在下载的任务，隐藏进度区域和取消按钮
+  if (taskId === currentMsTaskId) {
+    document.getElementById('modelscopeProgress').style.display = 'none';
+    document.getElementById('msCancelBtn').style.display = 'none';
+    currentMsTaskId = null;
+  }
   
   let confirmMsg = '确定要删除这个任务吗？';
   
@@ -2324,6 +2347,8 @@ document.getElementById('msDownloadType')?.addEventListener('change', function()
 });
 
 // ModelScope 下载表单提交
+let currentMsTaskId = null;
+
 document.getElementById('modelscopeForm')?.addEventListener('submit', async function(e) {
   e.preventDefault();
   
@@ -2347,11 +2372,17 @@ document.getElementById('modelscopeForm')?.addEventListener('submit', async func
   const progressText = document.getElementById('msProgressText');
   const progressPercent = document.getElementById('msProgressPercent');
   const progressBar = document.getElementById('msProgressBar');
+  const cancelBtn = document.getElementById('msCancelBtn');
   
   progressDiv.style.display = 'block';
   progressText.textContent = '正在初始化下载...';
   progressPercent.textContent = '0%';
   progressBar.style.width = '0%';
+  progressText.style.color = '';
+  progressBar.style.background = '#10b981';
+  cancelBtn.style.display = 'inline-block';
+  cancelBtn.textContent = '取消下载';
+  cancelBtn.disabled = false;
   
   try {
     // 发起下载请求
@@ -2372,7 +2403,7 @@ document.getElementById('modelscopeForm')?.addEventListener('submit', async func
       throw new Error(data.error || '下载失败');
     }
     
-    const taskId = data.taskId;
+    currentMsTaskId = data.taskId;
     
     // 刷新任务列表
     refreshTasks();
@@ -2381,7 +2412,7 @@ document.getElementById('modelscopeForm')?.addEventListener('submit', async func
     let lastLogCount = 0;
     const pollProgress = async () => {
       try {
-        const statusRes = await fetch(`/api/modelscope/progress/${taskId}`);
+        const statusRes = await fetch(`/api/modelscope/progress/${currentMsTaskId}`);
         const statusData = await statusRes.json();
         
         if (statusRes.ok) {
@@ -2395,6 +2426,8 @@ document.getElementById('modelscopeForm')?.addEventListener('submit', async func
             progressBar.style.width = '100%';
             progressText.style.color = '#10b981';
             progressBar.style.background = '#10b981';
+            cancelBtn.style.display = 'none';
+            currentMsTaskId = null;
             refreshTasks();
             return;
           }
@@ -2402,16 +2435,18 @@ document.getElementById('modelscopeForm')?.addEventListener('submit', async func
           if (statusData.status === '失败' || statusData.status === '已取消') {
             progressText.textContent = statusData.message || statusData.status;
             progressText.style.color = statusData.status === '已取消' ? '#f59e0b' : '#ef4444';
+            cancelBtn.style.display = 'none';
+            currentMsTaskId = null;
             refreshTasks();
             return;
           }
           
           // 继续轮询
-          setTimeout(pollProgress, 2000);
+          setTimeout(pollProgress, 5000);
         }
       } catch (err) {
         console.error('获取进度失败:', err);
-        setTimeout(pollProgress, 3000);
+        setTimeout(pollProgress, 5000);
       }
     };
     
@@ -2420,5 +2455,36 @@ document.getElementById('modelscopeForm')?.addEventListener('submit', async func
   } catch (error) {
     progressText.textContent = '错误: ' + error.message;
     progressText.style.color = '#ef4444';
+    cancelBtn.style.display = 'none';
+    currentMsTaskId = null;
+  }
+});
+
+// 取消 ModelScope 下载
+document.getElementById('msCancelBtn')?.addEventListener('click', async function() {
+  if (!currentMsTaskId) return;
+  
+  const cancelBtn = this;
+  cancelBtn.disabled = true;
+  cancelBtn.textContent = '取消中...';
+  
+  try {
+    const res = await fetch(`/api/modelscope/cancel/${currentMsTaskId}`, { method: 'POST' });
+    const data = await res.json();
+    
+    if (res.ok) {
+      document.getElementById('modelscopeProgress').style.display = 'none';
+      cancelBtn.style.display = 'none';
+      currentMsTaskId = null;
+      refreshTasks();
+    } else {
+      alert(data.error || '取消失败');
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = '取消下载';
+    }
+  } catch (error) {
+    alert('取消失败: ' + error.message);
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = '取消下载';
   }
 });

@@ -1,7 +1,7 @@
 {
-  "name": "harbor-image-manager",
+  "name": "imager",
   "version": "1.0.0",
-  "description": "Imager 镜像游侠系统",
+  "description": "Imager 镜像游侠 - 一站式容器镜像与文件传输管理平台",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,8 +9,10 @@
   },
   "keywords": [
     "harbor",
-    "docker",
-    "image-management"
+    "image-management",
+    "sftp",
+    "modelscope",
+    "file-transfer"
   ],
   "author": "",
   "license": "MIT",
@@ -21,5 +23,10 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ]
 }

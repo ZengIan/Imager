@@ -214,6 +214,10 @@ function addTaskLog(taskId, message) {
       time: new Date().toISOString(),
       message
     });
+    // 对于 ModelScope 下载任务，最多保留200条日志避免过大
+    if (taskId.startsWith('ms_') && task.logs.length > 200) {
+      task.logs = task.logs.slice(-200);
+    }
     saveTasks();
   }
 
@@ -1345,6 +1349,21 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      // 取消 ModelScope 下载（调用 Python 脚本）
+      if (modelscopeTasks.has(taskId)) {
+        const scriptPath = path.join(__dirname, 'modeldownload.py');
+        exec(`cd /home/zengcx && python3 "${scriptPath}" --cancel "${taskId}"`, (err, stdout, stderr) => {
+          const output = stripAnsi(stdout.toString().trim());
+          try {
+            const json = JSON.parse(output);
+            log('INFO', `ModelScope 下载已取消: ${taskId}, ${json.message || output}`);
+          } catch {
+            log('INFO', `ModelScope 下载已取消: ${taskId}, ${output}`);
+          }
+        });
+        modelscopeTasks.delete(taskId);
+      }
+
       tasks = tasks.filter(t => t.id !== taskId);
       saveTasks();
       
@@ -1552,11 +1571,15 @@ const server = http.createServer(async (req, res) => {
       
       // 创建任务
       const taskId = `ms_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      // 单文件下载时，目标显示完整文件路径
+      const targetPath = downloadType === 'file' && filePath 
+        ? `${localDir.replace(/\/$/, '')}/${filePath.split('/').pop()}` 
+        : localDir;
       const task = {
         id: taskId,
         type: '模型下载',
         source: downloadType === 'file' && filePath ? `${modelId}/${filePath}` : modelId,
-        target: localDir,
+        target: targetPath,
         status: '执行中',
         message: '正在初始化下载...',
         logs: [],
@@ -1599,30 +1622,25 @@ const server = http.createServer(async (req, res) => {
           }
           
           // 构建 Python SDK 下载命令
-          const scriptPath = path.join(__dirname, 'modelscope_download.py');
-          
+          const scriptPath = path.join(__dirname, 'modeldownload.py');
+
           let cmd;
           if (downloadType === 'file' && filePath) {
             // 单文件下载
             addTaskLog(taskId, `下载类型: 单文件 (${filePath})`);
-            cmd = `python3 "${scriptPath}" "${modelId}" "${localDir}" "${filePath}"`;
+            cmd = `python3 "${scriptPath}" "${taskId}" "${modelId}" "${localDir}" "${filePath}"`;
           } else {
             // 完整模型下载
             addTaskLog(taskId, '下载类型: 完整模型');
-            cmd = `python3 "${scriptPath}" "${modelId}" "${localDir}"`;
+            cmd = `python3 "${scriptPath}" "${taskId}" "${modelId}" "${localDir}"`;
           }
           
-          addTaskLog(taskId, `使用 Python SDK 下载模型`);
           updateTaskStatus(taskId, '执行中', '正在下载...');
           
           // 执行下载命令
-          const childProcess = exec(cmd, { maxBuffer: 100 * 1024 * 1024 });
-          
-          // 保存进程引用以便取消
-          const taskInfo = modelscopeTasks.get(taskId);
-          if (taskInfo) {
-            taskInfo.process = childProcess;
-          }
+          const childProcess = exec(cmd, { 
+            maxBuffer: 100 * 1024 * 1024
+          });
           
           childProcess.stdout.on('data', (data) => {
             const output = stripAnsi(data.toString().trim());
@@ -1668,29 +1686,50 @@ const server = http.createServer(async (req, res) => {
           });
           
           childProcess.on('close', (code) => {
-            const t = modelscopeTasks.get(taskId);
-            if (t && t.cancelled) {
-              updateTaskStatus(taskId, '已取消', '用户取消下载');
-              addTaskLog(taskId, '❌ 下载已取消');
+            const taskInfo = modelscopeTasks.get(taskId);
+            
+            // 任务不存在或已被取消但已从 modelscopeTasks 删除
+            if (!taskInfo) {
+              return;
+            }
+            
+            const task = tasks.find(t => t.id === taskId);
+            
+            // 130 表示被取消（SIGINT/SIGTERM），137=SIGKILL
+            if (taskInfo.cancelled || code === 130 || code === 137) {
+              if (task) {
+                updateTaskStatus(taskId, '已取消', '用户取消下载');
+                addTaskLog(taskId, '❌ 下载已取消');
+              }
               log('INFO', `ModelScope 下载任务已取消: ${taskId}`);
             } else if (code === 0) {
-              updateTaskStatus(taskId, '完成', '下载完成');
-              task.progress = 100;
-              addTaskLog(taskId, `✅ 模型下载成功: ${localDir}`);
+              if (task) {
+                updateTaskStatus(taskId, '完成', '下载完成');
+                task.progress = 100;
+                addTaskLog(taskId, `✅ 模型下载成功: ${task.target}`);
+              }
               log('INFO', `ModelScope 下载任务完成: ${taskId}`);
             } else {
-              updateTaskStatus(taskId, '失败', `下载失败，退出码: ${code}`);
-              addTaskLog(taskId, `❌ 下载失败，退出码: ${code}`);
+              if (task) {
+                updateTaskStatus(taskId, '失败', `下载失败，退出码: ${code}`);
+                addTaskLog(taskId, `❌ 下载失败，退出码: ${code}`);
+              }
               log('ERROR', `ModelScope 下载任务失败: ${taskId}, 退出码: ${code}`);
             }
             modelscopeTasks.delete(taskId);
           });
           
           childProcess.on('error', (err) => {
-            updateTaskStatus(taskId, '失败', err.message);
-            addTaskLog(taskId, `❌ 执行错误: ${err.message}`);
-            log('ERROR', `ModelScope 下载任务错误: ${taskId}, ${err.message}`);
-            modelscopeTasks.delete(taskId);
+            const taskInfo = modelscopeTasks.get(taskId);
+            if (taskInfo) {
+              const task = tasks.find(t => t.id === taskId);
+              if (task && !taskInfo.cancelled) {
+                updateTaskStatus(taskId, '失败', err.message);
+                addTaskLog(taskId, `❌ 执行错误: ${err.message}`);
+                log('ERROR', `ModelScope 下载任务错误: ${taskId}, ${err.message}`);
+              }
+              modelscopeTasks.delete(taskId);
+            }
           });
           
         } catch (error) {
@@ -1708,20 +1747,36 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname.match(/^\/api\/modelscope\/cancel\/ms_/)) {
       const taskId = pathname.split('/').pop();
       const taskInfo = modelscopeTasks.get(taskId);
-      
+
       if (!taskInfo) {
         sendJson(res, 404, { error: '任务不存在或已完成' });
         return;
       }
-      
-      if (taskInfo.process) {
-        taskInfo.cancelled = true;
-        taskInfo.process.kill('SIGTERM');
-        sendJson(res, 200, { message: '已发送取消信号' });
-        log('INFO', `取消 ModelScope 下载任务: ${taskId}`);
-      } else {
-        sendJson(res, 400, { error: '无法取消任务' });
+
+      // 标记为已取消
+      taskInfo.cancelled = true;
+
+      // 立即更新任务状态
+      const task = tasks.find(t => t.id === taskId);
+      if (task) {
+        task.status = '已取消';
+        task.message = '用户取消下载';
+        task.updatedAt = new Date().toISOString();
+        saveTasks();
       }
+
+      const scriptPath = path.join(__dirname, 'modeldownload.py');
+      exec(`cd /home/zengcx && python3 "${scriptPath}" --cancel "${taskId}"`, (err, stdout, stderr) => {
+        const output = stripAnsi(stdout.toString().trim());
+        try {
+          const json = JSON.parse(output);
+          log('INFO', `取消 ModelScope 下载: ${taskId}, ${json.message || output}`);
+        } catch {
+          log('INFO', `取消 ModelScope 下载: ${taskId}, ${output}`);
+        }
+      });
+
+      sendJson(res, 200, { message: '已发送取消信号' });
       return;
     }
     
