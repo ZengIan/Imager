@@ -1549,7 +1549,7 @@ const server = http.createServer(async (req, res) => {
       const taskId = `ms_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const task = {
         id: taskId,
-        type: 'ModelScope下载',
+        type: '模型下载',
         source: modelId,
         target: localDir,
         status: '执行中',
