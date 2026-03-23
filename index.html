@@ -234,22 +234,22 @@
       <section class="card">
         <h2>ModelScope 模型下载</h2>
         <form id="modelscopeForm" class="inline-form">
-          <label>
+          <label style="width: 110px !important; flex: 0 0 110px !important;">
             下载类型
             <select id="msDownloadType" required style="width: 100%;">
               <option value="model">完整模型</option>
               <option value="file">单个文件</option>
             </select>
           </label>
-          <label>
+          <label style="width: 240px !important; flex: 0 0 240px !important;">
             模型 ID
             <input type="text" id="msModelId" placeholder="AI-ModelScope/FlashVSR" required style="width: 100%;" />
           </label>
-          <label id="msFileLabel" style="display: none;">
+          <label id="msFileLabel" style="display: none; width: 240px !important; flex: 0 0 240px !important;">
             文件路径
             <input type="text" id="msFilePath" placeholder="README.md" style="width: 100%;" />
           </label>
-          <label>
+          <label style="width: 240px !important; flex: 0 0 240px !important;">
             保存目录
             <input type="text" id="msLocalDir" placeholder="/models/FlashVSR" required style="width: 100%;" />
           </label>
