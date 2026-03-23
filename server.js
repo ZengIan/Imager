@@ -1555,7 +1555,7 @@ const server = http.createServer(async (req, res) => {
       const task = {
         id: taskId,
         type: '模型下载',
-        source: modelId,
+        source: downloadType === 'file' && filePath ? `${modelId}/${filePath}` : modelId,
         target: localDir,
         status: '执行中',
         message: '正在初始化下载...',

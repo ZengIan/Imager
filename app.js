@@ -2347,13 +2347,11 @@ document.getElementById('modelscopeForm')?.addEventListener('submit', async func
   const progressText = document.getElementById('msProgressText');
   const progressPercent = document.getElementById('msProgressPercent');
   const progressBar = document.getElementById('msProgressBar');
-  const progressDetails = document.getElementById('msProgressDetails');
   
   progressDiv.style.display = 'block';
   progressText.textContent = '正在初始化下载...';
   progressPercent.textContent = '0%';
   progressBar.style.width = '0%';
-  progressDetails.textContent = '';
   
   try {
     // 发起下载请求
@@ -2391,15 +2389,10 @@ document.getElementById('modelscopeForm')?.addEventListener('submit', async func
           progressPercent.textContent = (statusData.progress || 0) + '%';
           progressText.textContent = statusData.message || '下载中...';
           
-          // 显示最新日志
-          if (statusData.logs && statusData.logs.length > 0) {
-            const newLogs = statusData.logs.slice(-5);
-            progressDetails.textContent = newLogs.join('\n');
-            progressDetails.scrollTop = progressDetails.scrollHeight;
-          }
-          
           if (statusData.status === '完成') {
             progressText.textContent = '下载完成';
+            progressPercent.textContent = '100%';
+            progressBar.style.width = '100%';
             progressText.style.color = '#10b981';
             progressBar.style.background = '#10b981';
             refreshTasks();

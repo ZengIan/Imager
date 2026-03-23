@@ -35,36 +35,26 @@ def download_model(model_id, local_dir, file_path=None):
         file_path: 单个文件路径（可选）
     """
     try:
-        # 输出开始信息
-        print(json.dumps({"status": "starting", "message": f"开始下载模型: {model_id}"}))
-        sys.stdout.flush()
-        
         # 确保目录存在
         os.makedirs(local_dir, exist_ok=True)
         
         if file_path:
             # 下载单个文件
-            print(json.dumps({"status": "downloading", "message": f"下载文件: {file_path}"}))
-            sys.stdout.flush()
-            
             local_path = model_file_download(
                 model_id=model_id,
                 file_path=file_path,
                 local_dir=local_dir
             )
-            print(json.dumps({"status": "file_completed", "file": file_path}))
-            print(json.dumps({"status": "completed", "message": f"文件下载完成: {local_path}"}))
+            # 只输出完成消息
+            print(json.dumps({"status": "completed", "message": f"文件下载完成: {file_path}"}))
         else:
-            # 下载完整模型
-            print(json.dumps({"status": "downloading", "message": "下载完整模型..."}))
-            sys.stdout.flush()
-            
             # 下载完整模型
             model_dir = snapshot_download(
                 model_id,
                 local_dir=local_dir
             )
-            print(json.dumps({"status": "completed", "message": f"模型下载完成: {model_dir}"}))
+            # 只输出完成消息
+            print(json.dumps({"status": "completed", "message": f"模型下载完成: {model_id}"}))
         
         sys.stdout.flush()
         
