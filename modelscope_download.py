@@ -7,6 +7,16 @@ ModelScope 模型下载脚本
 import sys
 import os
 import json
+import re
+
+# 禁用彩色输出
+os.environ['NO_COLOR'] = '1'
+os.environ['TERM'] = 'dumb'
+
+def strip_ansi(text):
+    """移除 ANSI 转义码"""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
 
 try:
     from modelscope.hub.snapshot_download import snapshot_download

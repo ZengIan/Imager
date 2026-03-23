@@ -9,6 +9,11 @@ const { formidable } = require('formidable');
 const CryptoJS = require('crypto-js');
 const rclone = require('./rclone');
 
+// 移除 ANSI 转义码（彩色输出）
+function stripAnsi(text) {
+  return text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
+}
+
 const PORT = process.env.PORT || 8080;
 const ROOT = __dirname;
 const CONFIG_FILE = path.join(ROOT, 'config.json');
@@ -1622,7 +1627,7 @@ const server = http.createServer(async (req, res) => {
           let lastProgress = 0;
           
           childProcess.stdout.on('data', (data) => {
-            const output = data.toString().trim();
+            const output = stripAnsi(data.toString().trim());
             const lines = output.split('\n').filter(l => l.trim());
             
             lines.forEach(line => {
@@ -1668,7 +1673,7 @@ const server = http.createServer(async (req, res) => {
           });
           
           childProcess.stderr.on('data', (data) => {
-            const output = data.toString().trim();
+            const output = stripAnsi(data.toString().trim());
             if (output) {
               addTaskLog(taskId, `[INFO] ${output}`);
             }
