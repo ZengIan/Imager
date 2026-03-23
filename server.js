@@ -1577,10 +1577,20 @@ const server = http.createServer(async (req, res) => {
           addTaskLog(taskId, `开始下载模型: ${modelId}`);
           addTaskLog(taskId, `目标目录: ${localDir}`);
           
-          // 确保目标目录存在
-          const parentDir = path.dirname(localDir);
-          if (!fs.existsSync(parentDir)) {
-            fs.mkdirSync(parentDir, { recursive: true });
+          // 检查目标目录是否存在（/models 是挂载目录，不需要创建）
+          if (!fs.existsSync(localDir)) {
+            // 如果目录不存在，尝试创建（仅对非挂载目录）
+            if (!localDir.startsWith('/models')) {
+              try {
+                fs.mkdirSync(localDir, { recursive: true });
+                addTaskLog(taskId, `已创建目录: ${localDir}`);
+              } catch (mkdirErr) {
+                // 目录创建失败，让 modelscope 自己处理
+                addTaskLog(taskId, `目录创建跳过: ${mkdirErr.message}`);
+              }
+            }
+          } else {
+            addTaskLog(taskId, `目标目录已存在: ${localDir}`);
           }
           
           // 构建 modelscope 命令
