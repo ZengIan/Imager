@@ -1593,21 +1593,22 @@ const server = http.createServer(async (req, res) => {
             addTaskLog(taskId, `目标目录已存在: ${localDir}`);
           }
           
-          // 构建 modelscope 命令
+          // 构建 Python SDK 下载命令
           const cacheDir = path.join(UPLOAD_DIR, 'modelscope_cache');
-          let cmd;
+          const scriptPath = path.join(__dirname, 'modelscope_download.py');
           
+          let cmd;
           if (downloadType === 'file' && filePath) {
             // 单文件下载
             addTaskLog(taskId, `下载类型: 单文件 (${filePath})`);
-            cmd = `modelscope download --model ${modelId} ${filePath} --local_dir ${localDir} --cache_dir ${cacheDir}`;
+            cmd = `python3 "${scriptPath}" "${modelId}" "${localDir}" "${cacheDir}" "${filePath}"`;
           } else {
             // 完整模型下载
             addTaskLog(taskId, '下载类型: 完整模型');
-            cmd = `modelscope download --model ${modelId} --local_dir ${localDir} --cache_dir ${cacheDir}`;
+            cmd = `python3 "${scriptPath}" "${modelId}" "${localDir}" "${cacheDir}"`;
           }
           
-          addTaskLog(taskId, `执行命令: ${cmd}`);
+          addTaskLog(taskId, `使用 Python SDK 下载模型`);
           updateTaskStatus(taskId, '执行中', '正在下载...');
           
           // 执行下载命令
@@ -1619,32 +1620,59 @@ const server = http.createServer(async (req, res) => {
             taskInfo.process = childProcess;
           }
           
-          let lastProgress = '';
+          let lastProgress = 0;
           
           childProcess.stdout.on('data', (data) => {
-            const output = data.toString();
-            // 解析进度信息
-            const progressMatch = output.match(/(\d+)%/);
-            if (progressMatch) {
-              const progress = parseInt(progressMatch[1]);
-              if (progress !== lastProgress) {
-                lastProgress = progress;
-                task.progress = progress;
-                task.message = `下载中... ${progress}%`;
-              }
-            }
-            // 记录输出（简化）
+            const output = data.toString().trim();
             const lines = output.split('\n').filter(l => l.trim());
+            
             lines.forEach(line => {
-              if (line.includes('Downloading') || line.includes('Downloading') || line.includes('%')) {
-                addTaskLog(taskId, line.trim());
+              try {
+                // 尝试解析 JSON 输出
+                const jsonMatch = line.match(/^\{.*\}$/);
+                if (jsonMatch) {
+                  const jsonData = JSON.parse(line);
+                  if (jsonData.status === 'downloading') {
+                    task.message = jsonData.message || '下载中...';
+                  } else if (jsonData.status === 'completed') {
+                    addTaskLog(taskId, `✅ ${jsonData.message}`);
+                  } else if (jsonData.status === 'cancelled') {
+                    addTaskLog(taskId, `⚠️ ${jsonData.message}`);
+                  } else if (jsonData.error) {
+                    addTaskLog(taskId, `❌ 错误: ${jsonData.error}`);
+                  } else {
+                    addTaskLog(taskId, jsonData.message || line);
+                  }
+                } else {
+                  // 非 JSON 输出，直接记录
+                  if (line.includes('Downloading') || line.includes('downloading') || line.includes('%')) {
+                    // 尝试解析进度
+                    const progressMatch = line.match(/(\d+)%/);
+                    if (progressMatch) {
+                      const progress = parseInt(progressMatch[1]);
+                      if (progress !== lastProgress) {
+                        lastProgress = progress;
+                        task.progress = progress;
+                        task.message = `下载中... ${progress}%`;
+                      }
+                    }
+                    addTaskLog(taskId, line);
+                  }
+                }
+              } catch (e) {
+                // JSON 解析失败，直接输出
+                if (line.trim()) {
+                  addTaskLog(taskId, line);
+                }
               }
             });
           });
           
           childProcess.stderr.on('data', (data) => {
-            const output = data.toString();
-            addTaskLog(taskId, `[INFO] ${output.trim()}`);
+            const output = data.toString().trim();
+            if (output) {
+              addTaskLog(taskId, `[INFO] ${output}`);
+            }
           });
           
           childProcess.on('close', (code) => {
