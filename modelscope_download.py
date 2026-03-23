@@ -20,7 +20,7 @@ def strip_ansi(text):
 
 try:
     from modelscope.hub.snapshot_download import snapshot_download
-    from modelscope.hub.api import HubApi
+    from modelscope.hub.file_download import model_file_download
 except ImportError:
     print(json.dumps({"error": "modelscope 未安装，请执行: pip install modelscope"}))
     sys.exit(1)
@@ -47,43 +47,16 @@ def download_model(model_id, local_dir, file_path=None):
             print(json.dumps({"status": "downloading", "message": f"下载文件: {file_path}"}))
             sys.stdout.flush()
             
-            api = HubApi()
-            # 获取文件列表
-            files = api.list_model_files(model_id)
-            
-            if file_path not in files:
-                print(json.dumps({"error": f"文件不存在: {file_path}"}))
-                sys.exit(1)
-            
-            # 下载单个文件
-            from modelscope.hub.file_download import model_file_download
             local_path = model_file_download(
                 model_id=model_id,
                 file_path=file_path,
                 local_dir=local_dir
             )
-            print(json.dumps({"status": "file_completed", "file": file_path, "size": "-"}))
+            print(json.dumps({"status": "file_completed", "file": file_path}))
             print(json.dumps({"status": "completed", "message": f"文件下载完成: {local_path}"}))
         else:
             # 下载完整模型
             print(json.dumps({"status": "downloading", "message": "下载完整模型..."}))
-            sys.stdout.flush()
-            
-            # 使用自定义钩子来跟踪文件下载完成
-            downloaded_files = []
-            
-            def download_hook(file_name, file_size):
-                """文件下载完成回调"""
-                downloaded_files.append(file_name)
-                print(json.dumps({"status": "file_completed", "file": file_name, "size": file_size}))
-                sys.stdout.flush()
-            
-            # snapshot_download 本身不支持回调，我们使用另一种方式
-            # 先获取文件列表，然后逐个下载
-            api = HubApi()
-            files = api.list_model_files(model_id)
-            
-            print(json.dumps({"status": "info", "message": f"共 {len(files)} 个文件"}))
             sys.stdout.flush()
             
             # 下载完整模型
