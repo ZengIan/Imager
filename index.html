@@ -230,6 +230,44 @@
         </div>
       </section>
 
+      <!-- ModelScope 模型下载 -->
+      <section class="card">
+        <h2>ModelScope 模型下载</h2>
+        <form id="modelscopeForm" class="inline-form">
+          <label>
+            下载类型
+            <select id="msDownloadType" required style="width: 100%;">
+              <option value="model">完整模型</option>
+              <option value="file">单个文件</option>
+            </select>
+          </label>
+          <label>
+            模型 ID
+            <input type="text" id="msModelId" placeholder="AI-ModelScope/FlashVSR" required style="width: 100%;" />
+          </label>
+          <label id="msFileLabel" style="display: none;">
+            文件路径
+            <input type="text" id="msFilePath" placeholder="README.md" style="width: 100%;" />
+          </label>
+          <label>
+            保存目录
+            <input type="text" id="msLocalDir" placeholder="/models/FlashVSR" required style="width: 100%;" />
+          </label>
+          <button type="submit" class="btn-submit">开始下载</button>
+        </form>
+        <!-- 下载进度 -->
+        <div id="modelscopeProgress" style="display: none; margin-top: 16px;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px;">
+            <span id="msProgressText">准备下载...</span>
+            <span id="msProgressPercent"></span>
+          </div>
+          <div style="width: 100%; height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden;">
+            <div id="msProgressBar" style="width: 0%; height: 100%; background: #10b981; transition: width 0.3s;"></div>
+          </div>
+          <div id="msProgressDetails" style="margin-top: 8px; font-size: 12px; color: var(--muted); white-space: pre-wrap; font-family: monospace;"></div>
+        </div>
+      </section>
+
       <section class="card">
         <h2>任务列表</h2>
         <table>

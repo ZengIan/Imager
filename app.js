@@ -2310,3 +2310,122 @@ function escapeHtml(text) {
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+// ========== ModelScope 模型下载 ==========
+
+// 下载类型切换
+document.getElementById('msDownloadType')?.addEventListener('change', function() {
+  const fileLabel = document.getElementById('msFileLabel');
+  if (this.value === 'file') {
+    fileLabel.style.display = 'block';
+  } else {
+    fileLabel.style.display = 'none';
+  }
+});
+
+// ModelScope 下载表单提交
+document.getElementById('modelscopeForm')?.addEventListener('submit', async function(e) {
+  e.preventDefault();
+  
+  const downloadType = document.getElementById('msDownloadType').value;
+  const modelId = document.getElementById('msModelId').value.trim();
+  const localDir = document.getElementById('msLocalDir').value.trim();
+  const filePath = document.getElementById('msFilePath').value.trim();
+  
+  if (!modelId || !localDir) {
+    alert('请填写模型 ID 和保存目录');
+    return;
+  }
+  
+  if (downloadType === 'file' && !filePath) {
+    alert('请填写要下载的文件路径');
+    return;
+  }
+  
+  // 显示进度区域
+  const progressDiv = document.getElementById('modelscopeProgress');
+  const progressText = document.getElementById('msProgressText');
+  const progressPercent = document.getElementById('msProgressPercent');
+  const progressBar = document.getElementById('msProgressBar');
+  const progressDetails = document.getElementById('msProgressDetails');
+  
+  progressDiv.style.display = 'block';
+  progressText.textContent = '正在初始化下载...';
+  progressPercent.textContent = '0%';
+  progressBar.style.width = '0%';
+  progressDetails.textContent = '';
+  
+  try {
+    // 发起下载请求
+    const res = await fetch('/api/modelscope/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        modelId,
+        localDir,
+        downloadType,
+        filePath: downloadType === 'file' ? filePath : null
+      })
+    });
+    
+    const data = await res.json();
+    
+    if (!res.ok) {
+      throw new Error(data.error || '下载失败');
+    }
+    
+    const taskId = data.taskId;
+    
+    // 刷新任务列表
+    refreshTasks();
+    
+    // 轮询进度
+    let lastLogCount = 0;
+    const pollProgress = async () => {
+      try {
+        const statusRes = await fetch(`/api/modelscope/progress/${taskId}`);
+        const statusData = await statusRes.json();
+        
+        if (statusRes.ok) {
+          progressBar.style.width = (statusData.progress || 0) + '%';
+          progressPercent.textContent = (statusData.progress || 0) + '%';
+          progressText.textContent = statusData.message || '下载中...';
+          
+          // 显示最新日志
+          if (statusData.logs && statusData.logs.length > 0) {
+            const newLogs = statusData.logs.slice(-5);
+            progressDetails.textContent = newLogs.join('\n');
+            progressDetails.scrollTop = progressDetails.scrollHeight;
+          }
+          
+          if (statusData.status === '完成') {
+            progressText.textContent = '下载完成';
+            progressText.style.color = '#10b981';
+            progressBar.style.background = '#10b981';
+            refreshTasks();
+            return;
+          }
+          
+          if (statusData.status === '失败' || statusData.status === '已取消') {
+            progressText.textContent = statusData.message || statusData.status;
+            progressText.style.color = statusData.status === '已取消' ? '#f59e0b' : '#ef4444';
+            refreshTasks();
+            return;
+          }
+          
+          // 继续轮询
+          setTimeout(pollProgress, 2000);
+        }
+      } catch (err) {
+        console.error('获取进度失败:', err);
+        setTimeout(pollProgress, 3000);
+      }
+    };
+    
+    pollProgress();
+    
+  } catch (error) {
+    progressText.textContent = '错误: ' + error.message;
+    progressText.style.color = '#ef4444';
+  }
+});

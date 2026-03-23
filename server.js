@@ -21,6 +21,7 @@ const SECRET_KEY = 'harbor-manager-secret-key-change-in-production';
 let harborConfigs = [];
 let tasks = [];
 let sftpUploadTasks = new Map(); // SFTP 上传任务状态
+let modelscopeTasks = new Map(); // ModelScope 下载任务状态
 
 function loadConfig() {
   try {
@@ -1529,6 +1530,187 @@ const server = http.createServer(async (req, res) => {
       } else {
         sendJson(res, 400, { success: false, error: result.error });
       }
+      return;
+    }
+    
+    // ========== ModelScope 模型下载 ==========
+    
+    // 启动 ModelScope 下载
+    if (req.method === 'POST' && pathname === '/api/modelscope/download') {
+      const body = await parseJsonBody(req);
+      const { modelId, localDir, downloadType, filePath } = body;
+      
+      if (!modelId || !localDir) {
+        sendJson(res, 400, { error: '缺少必填参数' });
+        return;
+      }
+      
+      // 创建任务
+      const taskId = `ms_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const task = {
+        id: taskId,
+        type: 'ModelScope下载',
+        source: modelId,
+        target: localDir,
+        status: '执行中',
+        message: '正在初始化下载...',
+        logs: [],
+        progress: 0,
+        time: new Date().toLocaleString('zh-CN')
+      };
+      tasks.unshift(task);
+      saveTasks();
+      
+      // 存储详细任务信息
+      modelscopeTasks.set(taskId, {
+        ...task,
+        startTime: new Date(),
+        cancelled: false
+      });
+      
+      log('INFO', `创建 ModelScope 下载任务: ${taskId}, 模型: ${modelId}, 目录: ${localDir}`);
+      sendJson(res, 200, { taskId });
+      
+      // 异步执行下载
+      (async () => {
+        try {
+          addTaskLog(taskId, `开始下载模型: ${modelId}`);
+          addTaskLog(taskId, `目标目录: ${localDir}`);
+          
+          // 确保目标目录存在
+          const parentDir = path.dirname(localDir);
+          if (!fs.existsSync(parentDir)) {
+            fs.mkdirSync(parentDir, { recursive: true });
+          }
+          
+          // 构建 modelscope 命令
+          const cacheDir = path.join(UPLOAD_DIR, 'modelscope_cache');
+          let cmd;
+          
+          if (downloadType === 'file' && filePath) {
+            // 单文件下载
+            addTaskLog(taskId, `下载类型: 单文件 (${filePath})`);
+            cmd = `modelscope download --model ${modelId} ${filePath} --local_dir ${localDir} --cache_dir ${cacheDir}`;
+          } else {
+            // 完整模型下载
+            addTaskLog(taskId, '下载类型: 完整模型');
+            cmd = `modelscope download --model ${modelId} --local_dir ${localDir} --cache_dir ${cacheDir}`;
+          }
+          
+          addTaskLog(taskId, `执行命令: ${cmd}`);
+          updateTaskStatus(taskId, '执行中', '正在下载...');
+          
+          // 执行下载命令
+          const childProcess = exec(cmd, { maxBuffer: 100 * 1024 * 1024 });
+          
+          // 保存进程引用以便取消
+          const taskInfo = modelscopeTasks.get(taskId);
+          if (taskInfo) {
+            taskInfo.process = childProcess;
+          }
+          
+          let lastProgress = '';
+          
+          childProcess.stdout.on('data', (data) => {
+            const output = data.toString();
+            // 解析进度信息
+            const progressMatch = output.match(/(\d+)%/);
+            if (progressMatch) {
+              const progress = parseInt(progressMatch[1]);
+              if (progress !== lastProgress) {
+                lastProgress = progress;
+                task.progress = progress;
+                task.message = `下载中... ${progress}%`;
+              }
+            }
+            // 记录输出（简化）
+            const lines = output.split('\n').filter(l => l.trim());
+            lines.forEach(line => {
+              if (line.includes('Downloading') || line.includes('Downloading') || line.includes('%')) {
+                addTaskLog(taskId, line.trim());
+              }
+            });
+          });
+          
+          childProcess.stderr.on('data', (data) => {
+            const output = data.toString();
+            addTaskLog(taskId, `[INFO] ${output.trim()}`);
+          });
+          
+          childProcess.on('close', (code) => {
+            const t = modelscopeTasks.get(taskId);
+            if (t && t.cancelled) {
+              updateTaskStatus(taskId, '已取消', '用户取消下载');
+              addTaskLog(taskId, '❌ 下载已取消');
+              log('INFO', `ModelScope 下载任务已取消: ${taskId}`);
+            } else if (code === 0) {
+              updateTaskStatus(taskId, '完成', '下载完成');
+              task.progress = 100;
+              addTaskLog(taskId, `✅ 模型下载成功: ${localDir}`);
+              log('INFO', `ModelScope 下载任务完成: ${taskId}`);
+            } else {
+              updateTaskStatus(taskId, '失败', `下载失败，退出码: ${code}`);
+              addTaskLog(taskId, `❌ 下载失败，退出码: ${code}`);
+              log('ERROR', `ModelScope 下载任务失败: ${taskId}, 退出码: ${code}`);
+            }
+            modelscopeTasks.delete(taskId);
+          });
+          
+          childProcess.on('error', (err) => {
+            updateTaskStatus(taskId, '失败', err.message);
+            addTaskLog(taskId, `❌ 执行错误: ${err.message}`);
+            log('ERROR', `ModelScope 下载任务错误: ${taskId}, ${err.message}`);
+            modelscopeTasks.delete(taskId);
+          });
+          
+        } catch (error) {
+          updateTaskStatus(taskId, '失败', error.message);
+          addTaskLog(taskId, `❌ 下载失败: ${error.message}`);
+          log('ERROR', `ModelScope 下载任务异常: ${taskId}, ${error.message}`);
+          modelscopeTasks.delete(taskId);
+        }
+      })();
+      
+      return;
+    }
+    
+    // 取消 ModelScope 下载
+    if (req.method === 'POST' && pathname.match(/^\/api\/modelscope\/cancel\/ms_/)) {
+      const taskId = pathname.split('/').pop();
+      const taskInfo = modelscopeTasks.get(taskId);
+      
+      if (!taskInfo) {
+        sendJson(res, 404, { error: '任务不存在或已完成' });
+        return;
+      }
+      
+      if (taskInfo.process) {
+        taskInfo.cancelled = true;
+        taskInfo.process.kill('SIGTERM');
+        sendJson(res, 200, { message: '已发送取消信号' });
+        log('INFO', `取消 ModelScope 下载任务: ${taskId}`);
+      } else {
+        sendJson(res, 400, { error: '无法取消任务' });
+      }
+      return;
+    }
+    
+    // 查询 ModelScope 下载进度
+    if (req.method === 'GET' && pathname.match(/^\/api\/modelscope\/progress\/ms_/)) {
+      const taskId = pathname.split('/').pop();
+      const task = tasks.find(t => t.id === taskId);
+      
+      if (!task) {
+        sendJson(res, 404, { error: '任务不存在' });
+        return;
+      }
+      
+      sendJson(res, 200, {
+        status: task.status,
+        progress: task.progress || 0,
+        message: task.message,
+        logs: task.logs || []
+      });
       return;
     }
     
