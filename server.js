@@ -1594,18 +1594,17 @@ const server = http.createServer(async (req, res) => {
           }
           
           // 构建 Python SDK 下载命令
-          const cacheDir = path.join(UPLOAD_DIR, 'modelscope_cache');
           const scriptPath = path.join(__dirname, 'modelscope_download.py');
           
           let cmd;
           if (downloadType === 'file' && filePath) {
             // 单文件下载
             addTaskLog(taskId, `下载类型: 单文件 (${filePath})`);
-            cmd = `python3 "${scriptPath}" "${modelId}" "${localDir}" "${cacheDir}" "${filePath}"`;
+            cmd = `python3 "${scriptPath}" "${modelId}" "${localDir}" "${filePath}"`;
           } else {
             // 完整模型下载
             addTaskLog(taskId, '下载类型: 完整模型');
-            cmd = `python3 "${scriptPath}" "${modelId}" "${localDir}" "${cacheDir}"`;
+            cmd = `python3 "${scriptPath}" "${modelId}" "${localDir}"`;
           }
           
           addTaskLog(taskId, `使用 Python SDK 下载模型`);

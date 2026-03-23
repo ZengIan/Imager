@@ -15,14 +15,13 @@ except ImportError:
     print(json.dumps({"error": "modelscope 未安装，请执行: pip install modelscope"}))
     sys.exit(1)
 
-def download_model(model_id, local_dir, cache_dir=None, file_path=None):
+def download_model(model_id, local_dir, file_path=None):
     """
     下载模型
     
     Args:
         model_id: 模型ID，如 'Qwen/Qwen3.5-27B'
         local_dir: 本地保存目录
-        cache_dir: 缓存目录
         file_path: 单个文件路径（可选）
     """
     try:
@@ -51,8 +50,7 @@ def download_model(model_id, local_dir, cache_dir=None, file_path=None):
             local_path = model_file_download(
                 model_id=model_id,
                 file_path=file_path,
-                local_dir=local_dir,
-                cache_dir=cache_dir
+                local_dir=local_dir
             )
             print(json.dumps({"status": "completed", "message": f"文件下载完成: {local_path}"}))
         else:
@@ -62,8 +60,7 @@ def download_model(model_id, local_dir, cache_dir=None, file_path=None):
             
             model_dir = snapshot_download(
                 model_id,
-                local_dir=local_dir,
-                cache_dir=cache_dir
+                local_dir=local_dir
             )
             print(json.dumps({"status": "completed", "message": f"模型下载完成: {model_dir}"}))
         
@@ -78,12 +75,11 @@ def download_model(model_id, local_dir, cache_dir=None, file_path=None):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print(json.dumps({"error": "参数不足，需要: model_id local_dir [cache_dir] [file_path]"}))
+        print(json.dumps({"error": "参数不足，需要: model_id local_dir [file_path]"}))
         sys.exit(1)
     
     model_id = sys.argv[1]
     local_dir = sys.argv[2]
-    cache_dir = sys.argv[3] if len(sys.argv) > 3 else None
-    file_path = sys.argv[4] if len(sys.argv) > 4 else None
+    file_path = sys.argv[3] if len(sys.argv) > 3 else None
     
-    download_model(model_id, local_dir, cache_dir, file_path)
+    download_model(model_id, local_dir, file_path)
