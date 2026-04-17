@@ -94,6 +94,48 @@
       </section>
 
       <section class="card">
+        <h2>镜像批量下载</h2>
+        <form id="bulkDownloadForm" class="inline-form">
+          <label style="flex: 1 1 100%; min-width: 100%; max-width: 100%;">
+            源镜像（多个镜像用换行分隔）
+            <textarea
+              name="sourceImages"
+              id="bulkSourceImages"
+              placeholder="docker.io/library/nginx:1.27&#10;docker.io/library/redis:7&#10;docker.io/library/busybox:latest"
+              rows="3"
+              required
+              style="width: 100%; resize: vertical; min-height: 80px; padding: 10px 12px; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--text);"
+            ></textarea>
+          </label>
+          <label>
+            镜像架构
+            <select name="arch" id="bulkArch">
+              <option value="all">多架构</option>
+              <option value="system">系统自匹配</option>
+            </select>
+          </label>
+          <label>
+            保存路径
+            <input type="text" name="savePath" id="bulkSavePath" placeholder="/downloads" required />
+          </label>
+          <div class="bulk-accel-field" style="flex: 0 0 auto; min-width: auto; display: grid; gap: 6px; font-size: 14px; font-weight: 500;">
+            <span style="display: flex; align-items: center; gap: 6px;">
+              镜像加速
+              <span class="tooltip-wrapper" tabindex="0">
+                <span class="tooltip-icon">?</span>
+                <span class="tooltip-text">默认支持dockerhub镜像加速，请不要填写任何镜像源地址</span>
+              </span>
+            </span>
+            <label style="margin: 0; height: 40px; display: flex; align-items: center; cursor: pointer;">
+              <input type="checkbox" id="bulkAccelEnabled" style="width: auto; height: auto; margin: 0; cursor: pointer;" />
+              <span style="margin-left: 8px; font-weight: 400; font-size: 13px; color: var(--muted);">开启加速（docker.1ms.run）</span>
+            </label>
+          </div>
+          <button type="submit" class="btn-submit">创建下载任务</button>
+        </form>
+      </section>
+
+      <section class="card">
         <h2>本地镜像包上传</h2>
         <form id="uploadForm" class="inline-form">
           <label>

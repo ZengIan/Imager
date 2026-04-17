@@ -289,7 +289,7 @@ async function loadTaskDetail(taskId) {
 
     // 架构显示文本（仅镜像相关任务显示）
     const archText = task.arch === 'all' ? '多架构' : (task.arch === 'system' ? '系统自匹配' : (task.arch || '多架构'));
-    const showArch = task.type === '镜像同步' || task.type === '本地导入';
+    const showArch = task.type === '镜像同步' || task.type === '本地导入' || task.type === '镜像下载';
     
     // 本地导入任务显示目标项目时不带 tag
     const displayTarget = task.type === '本地导入' 
@@ -446,6 +446,51 @@ function initEventListeners() {
       } catch (error) {
         configStatus.textContent = `同步任务失败：${error.message}`;
         configStatus.style.color = '#ef4444';
+      }
+    });
+  }
+
+  const bulkDownloadForm = document.querySelector('#bulkDownloadForm');
+  if (bulkDownloadForm) {
+    bulkDownloadForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const submitBtn = form.querySelector('button[type="submit"]');
+
+      const sourceImages = document.querySelector('#bulkSourceImages').value;
+      const arch = document.querySelector('#bulkArch').value || 'all';
+      const savePath = document.querySelector('#bulkSavePath').value.trim();
+      const accelEnabled = document.querySelector('#bulkAccelEnabled').checked;
+
+      const images = sourceImages.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+      if (images.length === 0) {
+        alert('请填写至少一个镜像');
+        return;
+      }
+      if (!savePath) {
+        alert('请填写保存路径');
+        return;
+      }
+
+      const originalText = submitBtn.textContent;
+      submitBtn.disabled = true;
+      submitBtn.textContent = '创建中...';
+
+      try {
+        await request('/api/images/bulk-download', {
+          sourceImages,
+          arch,
+          savePath,
+          accelEnabled
+        });
+        // 仅清空源镜像，保留保存路径和加速开关（方便连续创建）
+        document.querySelector('#bulkSourceImages').value = '';
+        await refreshTasks();
+      } catch (error) {
+        alert('创建下载任务失败：' + error.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText;
       }
     });
   }

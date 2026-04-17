@@ -1002,6 +1002,139 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
   }
 }
 
+// 将 Docker Hub 镜像重写为加速镜像源
+function rewriteToAccelMirror(image) {
+  const ACCEL_HOST = 'docker.1ms.run';
+  const trimmed = image.trim();
+  if (!trimmed) return trimmed;
+
+  // 已包含 docker.io 前缀
+  if (trimmed.startsWith('docker.io/')) {
+    return ACCEL_HOST + trimmed.substring('docker.io'.length);
+  }
+
+  // 检查是否已指定其他仓库（第一段包含 . 或 : 视为域名）
+  const firstSlash = trimmed.indexOf('/');
+  if (firstSlash > 0) {
+    const firstPart = trimmed.substring(0, firstSlash);
+    if (firstPart.includes('.') || firstPart.includes(':') || firstPart === 'localhost') {
+      return trimmed; // 用户已显式指定镜像源
+    }
+    // 形如 "library/nginx:tag" 或 "user/image:tag"
+    return `${ACCEL_HOST}/${trimmed}`;
+  }
+
+  // 无斜杠，形如 "nginx:1.27"，视为 Docker Hub 官方库
+  return `${ACCEL_HOST}/library/${trimmed}`;
+}
+
+// 将镜像引用转换为安全的文件名
+function imageToSafeName(image) {
+  return image.replace(/[^a-zA-Z0-9_.-]/g, '_').replace(/^_+|_+$/g, '');
+}
+
+// 解析用户输入的镜像列表（支持换行、逗号、分号、空白分隔）
+function parseImageList(raw) {
+  if (!raw) return [];
+  return raw
+    .split(/[\n,;]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+// 创建镜像批量下载任务
+async function bulkDownloadImages(taskId, images, savePath, arch, accelEnabled, archiveName) {
+  const tempDir = path.join(UPLOAD_DIR, `bulk_${taskId}`);
+
+  try {
+    updateTaskStatus(taskId, '执行中', `准备下载 ${images.length} 个镜像`);
+    addTaskLog(taskId, `批量下载开始，共 ${images.length} 个镜像`);
+    addTaskLog(taskId, `镜像架构: ${arch === 'all' ? '多架构' : '系统自匹配'}`);
+    addTaskLog(taskId, `保存路径: ${savePath}`);
+    addTaskLog(taskId, `镜像加速: ${accelEnabled ? '已开启 (docker.1ms.run)' : '未开启'}`);
+
+    // 检查 skopeo 是否可用
+    const hasSkopeo = await checkSkopeo();
+    if (!hasSkopeo) {
+      throw new Error('未检测到 skopeo，请先安装 skopeo 工具');
+    }
+
+    // 确保保存目录存在
+    if (!fs.existsSync(savePath)) {
+      try {
+        fs.mkdirSync(savePath, { recursive: true });
+        addTaskLog(taskId, `已创建保存目录: ${savePath}`);
+      } catch (e) {
+        throw new Error(`创建保存目录失败: ${e.message}`);
+      }
+    }
+
+    // 创建临时下载目录
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    const archOption = arch === 'all' ? '--multi-arch=all' : '--multi-arch=system';
+    // 多架构使用 oci-archive 以保留所有架构信息，单架构使用 docker-archive
+    const archiveFormat = arch === 'all' ? 'oci-archive' : 'docker-archive';
+
+    // 逐个下载
+    for (let i = 0; i < images.length; i++) {
+      const rawImage = images[i];
+      const sourceImage = accelEnabled ? rewriteToAccelMirror(rawImage) : rawImage;
+      const safeName = imageToSafeName(rawImage);
+      const tarPath = path.join(tempDir, `${safeName}.tar`);
+
+      updateTaskStatus(taskId, '执行中', `下载镜像 ${i + 1}/${images.length}: ${rawImage}`);
+      addTaskLog(taskId, `[${i + 1}/${images.length}] 下载: ${sourceImage}`);
+
+      // docker-archive 需要带上镜像引用
+      const skopeoCmd = archiveFormat === 'docker-archive'
+        ? `skopeo copy ${archOption} docker://${sourceImage} docker-archive:${tarPath}:${rawImage} --src-tls-verify=false`
+        : `skopeo copy ${archOption} docker://${sourceImage} oci-archive:${tarPath} --src-tls-verify=false`;
+
+      await executeCommand(skopeoCmd, taskId);
+      addTaskLog(taskId, `[${i + 1}/${images.length}] ✅ 下载完成: ${rawImage}`);
+    }
+
+    // 打包为 tar.gz
+    const finalArchive = path.join(savePath, archiveName);
+    updateTaskStatus(taskId, '执行中', '打包为 tar.gz');
+    addTaskLog(taskId, `开始打包 -> ${finalArchive}`);
+
+    await executeCommand(`tar -czf "${finalArchive}" -C "${tempDir}" .`, taskId);
+
+    // 清理临时目录
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (e) {
+      log('WARN', `清理临时目录失败: ${e.message}`);
+    }
+
+    // 计算归档大小
+    let sizeInfo = '';
+    try {
+      const stat = fs.statSync(finalArchive);
+      const sizeMB = (stat.size / 1024 / 1024).toFixed(2);
+      sizeInfo = ` (${sizeMB} MB)`;
+    } catch (e) {}
+
+    updateTaskStatus(taskId, '完成', `镜像包已保存: ${finalArchive}${sizeInfo}`);
+    addTaskLog(taskId, `✅ 批量下载完成: ${finalArchive}${sizeInfo}`);
+    log('INFO', `镜像批量下载任务完成: ${taskId}, 归档: ${finalArchive}`);
+  } catch (error) {
+    // 清理临时目录
+    try {
+      if (fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    } catch (e) {}
+
+    const errorMessage = error.message || String(error);
+    log('ERROR', `镜像批量下载任务失败: ${taskId}, 错误: ${errorMessage}`);
+    addTaskLog(taskId, `❌ 批量下载失败: ${errorMessage}`);
+    updateTaskStatus(taskId, '失败', errorMessage);
+  }
+}
+
 // 检测tar包格式
 function detectTarFormat(tarPath) {
   try {
@@ -1256,6 +1389,60 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && pathname === '/api/images/bulk-download') {
+      const body = await parseJsonBody(req);
+      const { sourceImages, savePath, arch, accelEnabled } = body;
+
+      const images = parseImageList(sourceImages);
+      if (images.length === 0) {
+        sendJson(res, 400, { error: '请填写至少一个镜像' });
+        return;
+      }
+      if (!savePath || !savePath.trim()) {
+        sendJson(res, 400, { error: '请填写保存路径' });
+        return;
+      }
+
+      // 输入校验，防止命令注入
+      const imageRegex = /^[a-zA-Z0-9._\/@:\-]+$/;
+      const invalidImage = images.find(img => !imageRegex.test(img));
+      if (invalidImage) {
+        sendJson(res, 400, { error: `镜像名包含非法字符: ${invalidImage}` });
+        return;
+      }
+      if (/[`"'$;|&<>]/.test(savePath)) {
+        sendJson(res, 400, { error: '保存路径包含非法字符' });
+        return;
+      }
+
+      const archValue = arch === 'system' ? 'system' : 'all';
+      const accel = !!accelEnabled;
+      const trimmedSavePath = savePath.trim();
+
+      // 生成归档文件名（当前时间戳）
+      const now = new Date();
+      const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+      const archiveName = `images_${ts}.tar.gz`;
+
+      const displaySource = images.length === 1 ? images[0] : `${images.length} 个镜像`;
+      const target = path.posix.join(trimmedSavePath.replace(/\\/g, '/'), archiveName);
+      const task = createTask('镜像下载', displaySource, target, archValue);
+      // 保存重试所需的元数据
+      task.meta = { images, savePath: trimmedSavePath, accelEnabled: accel, archiveName };
+      saveTasks();
+
+      log('INFO', `创建镜像批量下载任务: ${task.id}, 共 ${images.length} 个镜像, 保存到 ${target}`);
+      addTaskLog(task.id, `创建批量下载任务：${images.length} 个镜像`);
+      for (const img of images) {
+        addTaskLog(task.id, `  - ${img}`);
+      }
+
+      setImmediate(() => bulkDownloadImages(task.id, images, trimmedSavePath, archValue, accel, archiveName));
+
+      sendJson(res, 200, { task });
+      return;
+    }
+
     if (req.method === 'POST' && pathname === '/api/images/upload') {
       if (harborConfigs.length === 0) {
         sendJson(res, 400, { error: '请先配置 Harbor 连接' });
@@ -1345,6 +1532,19 @@ const server = http.createServer(async (req, res) => {
             log('INFO', `删除 tar 包: ${tarFileName}`);
           } catch (e) {
             log('ERROR', `删除 tar 包失败: ${e.message}`);
+          }
+        }
+      }
+
+      // 如果是镜像下载任务且仍有未清理的临时目录，清理它
+      if (task.type === '镜像下载') {
+        const bulkTempDir = path.join(UPLOAD_DIR, `bulk_${task.id}`);
+        if (fs.existsSync(bulkTempDir)) {
+          try {
+            fs.rmSync(bulkTempDir, { recursive: true, force: true });
+            log('INFO', `清理批量下载临时目录: ${bulkTempDir}`);
+          } catch (e) {
+            log('WARN', `清理批量下载临时目录失败: ${e.message}`);
           }
         }
       }
@@ -1447,6 +1647,13 @@ const server = http.createServer(async (req, res) => {
         }
         const importProject = task.target.split('/')[1];
         setImmediate(() => loadAndPushTar(taskId, tarPath, importProject, harborConfig, task.arch || 'all'));
+      } else if (task.type === '镜像下载') {
+        const meta = task.meta;
+        if (!meta || !Array.isArray(meta.images) || !meta.savePath || !meta.archiveName) {
+          sendJson(res, 400, { error: '镜像下载任务元数据缺失，无法重新执行' });
+          return;
+        }
+        setImmediate(() => bulkDownloadImages(taskId, meta.images, meta.savePath, task.arch || 'all', !!meta.accelEnabled, meta.archiveName));
       }
       
       sendJson(res, 200, { message: '任务已重新执行', task });
