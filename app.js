@@ -434,9 +434,17 @@ function initEventListeners() {
       const form = event.currentTarget;
       const formData = new FormData(form);
 
+      const rawImages = formData.get('sourceImages') || '';
+      const images = String(rawImages).split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+      if (images.length === 0) {
+        configStatus.textContent = '请填写至少一个源镜像';
+        configStatus.style.color = '#ef4444';
+        return;
+      }
+
       try {
-        const result = await request('/api/images/sync', {
-          sourceImage: formData.get('sourceImage'),
+        await request('/api/images/sync', {
+          sourceImages: images,
           targetRepo: formData.get('targetRepo'),
           targetProject: formData.get('targetProject'),
           arch: formData.get('arch') || 'all'
