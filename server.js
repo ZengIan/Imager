@@ -609,10 +609,8 @@ async function syncImage(taskId, sourceImage, targetProject, harborConfig, arch 
 
     if (hasSkopeo) {
       // 使用 skopeo 直接复制镜像
-      updateTaskStatus(taskId, '执行中', `使用 skopeo 同步镜像 (架构: ${arch})`);
-      // skopeo --multi-arch 支持 'all', 'system', 'index-only'
-      // all: 复制所有架构, system: 复制系统当前架构
-      const archOption = arch === 'all' ? '--multi-arch=all' : '--multi-arch=system';
+      updateTaskStatus(taskId, '执行中', `使用 skopeo 同步镜像 (架构: ${archDisplayName(arch)})`);
+      const archOption = getSkopeoCopyArchFlag(arch);
       const skopeoCmd = `skopeo copy ${archOption} docker://${sourceImage} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --src-tls-verify=false --dest-tls-verify=false`;
       await executeCommand(skopeoCmd, taskId);
     } else {
@@ -644,6 +642,70 @@ async function syncImage(taskId, sourceImage, targetProject, harborConfig, arch 
     errorMessage = errorMessage.replace(/--dest-creds\s+([^:]+):(\S+)/g, '--dest-creds $1:***');
     updateTaskStatus(taskId, '失败', errorMessage);
     addTaskLog(taskId, `❌ 镜像同步失败: ${errorMessage}`);
+  }
+}
+
+// 批量镜像同步：将多个源镜像同步到同一 Harbor 项目
+async function bulkSyncImages(taskId, images, targetProject, harborConfig, arch = 'all') {
+  try {
+    updateTaskStatus(taskId, '执行中', `批量同步开始，共 ${images.length} 个镜像`);
+    addTaskLog(taskId, `批量同步开始，共 ${images.length} 个镜像`);
+    addTaskLog(taskId, `镜像架构: ${archDisplayName(arch)}`);
+    addTaskLog(taskId, `目标仓库: ${harborConfig.harborUrl}, 目标项目: ${targetProject}`);
+
+    const hasSkopeo = await checkSkopeo();
+    if (!hasSkopeo) {
+      addTaskLog(taskId, '警告: skopeo 未安装，使用 docker 命令降级处理');
+    }
+
+    const archOption = getSkopeoCopyArchFlag(arch);
+    const targetHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
+    const failed = [];
+
+    for (let i = 0; i < images.length; i++) {
+      const sourceImage = images[i];
+      try {
+        updateTaskStatus(taskId, '执行中', `同步 ${i + 1}/${images.length}: ${sourceImage}`);
+        addTaskLog(taskId, `[${i + 1}/${images.length}] 同步: ${sourceImage}`);
+
+        const imageParts = sourceImage.split(':');
+        const imageWithoutTag = imageParts[0];
+        const tag = imageParts.length > 1 ? imageParts[1] : 'latest';
+        const targetImage = `${targetHost}/${targetProject}/${imageWithoutTag.split('/').pop()}:${tag}`;
+
+        if (hasSkopeo) {
+          const skopeoCmd = `skopeo copy ${archOption} docker://${sourceImage} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --src-tls-verify=false --dest-tls-verify=false`;
+          await executeCommand(skopeoCmd, taskId);
+        } else {
+          await executeCommand(`docker pull ${sourceImage}`, taskId);
+          await executeCommand(`docker tag ${sourceImage} ${targetImage}`, taskId);
+          const loginCmd = `docker login -u ${harborConfig.username} -p ${harborConfig.password} ${targetHost}`;
+          await executeCommand(loginCmd, taskId, true);
+          await executeCommand(`docker push ${targetImage}`, taskId);
+        }
+        addTaskLog(taskId, `[${i + 1}/${images.length}] ✅ 完成: ${sourceImage}`);
+      } catch (err) {
+        let errorMessage = err.message || String(err);
+        errorMessage = errorMessage.replace(/-p\s+\S+/g, '-p ***');
+        errorMessage = errorMessage.replace(/--dest-creds\s+([^:]+):(\S+)/g, '--dest-creds $1:***');
+        addTaskLog(taskId, `[${i + 1}/${images.length}] ❌ 失败: ${sourceImage} - ${errorMessage}`);
+        failed.push({ image: sourceImage, error: errorMessage });
+      }
+    }
+
+    if (failed.length === 0) {
+      updateTaskStatus(taskId, '完成', `批量同步成功，共 ${images.length} 个镜像`);
+      addTaskLog(taskId, `✅ 批量同步全部成功`);
+    } else {
+      updateTaskStatus(taskId, '失败', `批量同步完成: 成功 ${images.length - failed.length} / 失败 ${failed.length}`);
+      addTaskLog(taskId, `⚠️ 批量同步完成: 成功 ${images.length - failed.length}, 失败 ${failed.length}`);
+    }
+  } catch (error) {
+    let errorMessage = error.message || String(error);
+    errorMessage = errorMessage.replace(/-p\s+\S+/g, '-p ***');
+    errorMessage = errorMessage.replace(/--dest-creds\s+([^:]+):(\S+)/g, '--dest-creds $1:***');
+    updateTaskStatus(taskId, '失败', errorMessage);
+    addTaskLog(taskId, `❌ 批量同步失败: ${errorMessage}`);
   }
 }
 
@@ -1042,6 +1104,43 @@ function parseImageList(raw) {
     .filter(Boolean);
 }
 
+// 根据架构值返回 skopeo copy 的参数
+// 支持: 'all'（多架构）, 'arm64', 'amd64', 'system'（向后兼容）
+function getSkopeoCopyArchFlag(arch) {
+  switch (arch) {
+    case 'arm64':
+      return '--override-arch arm64 --override-os linux';
+    case 'amd64':
+      return '--override-arch amd64 --override-os linux';
+    case 'system':
+      return '--multi-arch=system';
+    case 'all':
+    default:
+      return '--multi-arch=all';
+  }
+}
+
+// 根据架构值返回批量下载时的 skopeo 参数 + 归档格式
+function getSkopeoArchiveConfig(arch) {
+  if (arch === 'all') {
+    return { archFlag: '--multi-arch=all', archiveFormat: 'oci-archive' };
+  }
+  if (arch === 'arm64' || arch === 'amd64') {
+    return { archFlag: `--override-arch ${arch} --override-os linux`, archiveFormat: 'docker-archive' };
+  }
+  // 'system' 或未知
+  return { archFlag: '--multi-arch=system', archiveFormat: 'docker-archive' };
+}
+
+// 架构值的显示名
+function archDisplayName(arch) {
+  if (arch === 'all') return '多架构';
+  if (arch === 'system') return '系统自匹配';
+  if (arch === 'arm64') return 'arm64';
+  if (arch === 'amd64') return 'amd64';
+  return arch || '多架构';
+}
+
 // 创建镜像批量下载任务
 async function bulkDownloadImages(taskId, images, savePath, arch, accelEnabled, archiveName) {
   const tempDir = path.join(UPLOAD_DIR, `bulk_${taskId}`);
@@ -1049,7 +1148,7 @@ async function bulkDownloadImages(taskId, images, savePath, arch, accelEnabled, 
   try {
     updateTaskStatus(taskId, '执行中', `准备下载 ${images.length} 个镜像`);
     addTaskLog(taskId, `批量下载开始，共 ${images.length} 个镜像`);
-    addTaskLog(taskId, `镜像架构: ${arch === 'all' ? '多架构' : '系统自匹配'}`);
+    addTaskLog(taskId, `镜像架构: ${archDisplayName(arch)}`);
     addTaskLog(taskId, `保存路径: ${savePath}`);
     addTaskLog(taskId, `镜像加速: ${accelEnabled ? '已开启 (docker.1ms.run)' : '未开启'}`);
 
@@ -1072,9 +1171,8 @@ async function bulkDownloadImages(taskId, images, savePath, arch, accelEnabled, 
     // 创建临时下载目录
     fs.mkdirSync(tempDir, { recursive: true });
 
-    const archOption = arch === 'all' ? '--multi-arch=all' : '--multi-arch=system';
     // 多架构使用 oci-archive 以保留所有架构信息，单架构使用 docker-archive
-    const archiveFormat = arch === 'all' ? 'oci-archive' : 'docker-archive';
+    const { archFlag: archOption, archiveFormat } = getSkopeoArchiveConfig(arch);
 
     // 逐个下载
     for (let i = 0; i < images.length; i++) {
@@ -1365,9 +1463,28 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await parseJsonBody(req);
-      const { sourceImage, targetRepo, targetProject, arch } = body;
-      if (!sourceImage || !targetRepo || !targetProject) {
+      const { sourceImage, sourceImages, targetRepo, targetProject, arch } = body;
+
+      // 支持批量（sourceImages）和单个（sourceImage，向后兼容）
+      let imageList = [];
+      if (Array.isArray(sourceImages)) {
+        imageList = sourceImages.map(s => typeof s === 'string' ? s.trim() : '').filter(Boolean);
+      } else if (typeof sourceImages === 'string' && sourceImages.trim()) {
+        imageList = parseImageList(sourceImages);
+      } else if (typeof sourceImage === 'string' && sourceImage.trim()) {
+        imageList = [sourceImage.trim()];
+      }
+
+      if (imageList.length === 0 || !targetRepo || !targetProject) {
         sendJson(res, 400, { error: '缺少必填字段' });
+        return;
+      }
+
+      // 输入校验，防止命令注入
+      const imageRegex = /^[a-zA-Z0-9._\/@:\-]+$/;
+      const invalidImage = imageList.find(img => !imageRegex.test(img));
+      if (invalidImage) {
+        sendJson(res, 400, { error: `镜像名包含非法字符: ${invalidImage}` });
         return;
       }
 
@@ -1377,13 +1494,35 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const imageParts = sourceImage.split(':');
-      const imageWithoutTag = imageParts[0];
-      const tag = imageParts.length > 1 ? imageParts[1] : 'latest';
-      const target = `${harborConfig.harborUrl.replace(/^https?:\/\//, '')}/${targetProject}/${imageWithoutTag.split('/').pop()}:${tag}`;
-      const task = createTask('镜像同步', sourceImage, target, arch || 'all');
+      const archValue = arch || 'all';
+      const targetHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
 
-      setImmediate(() => syncImage(task.id, sourceImage, targetProject, harborConfig, arch || 'all'));
+      if (imageList.length === 1) {
+        const only = imageList[0];
+        const imageParts = only.split(':');
+        const imageWithoutTag = imageParts[0];
+        const tag = imageParts.length > 1 ? imageParts[1] : 'latest';
+        const target = `${targetHost}/${targetProject}/${imageWithoutTag.split('/').pop()}:${tag}`;
+        const task = createTask('镜像同步', only, target, archValue);
+        setImmediate(() => syncImage(task.id, only, targetProject, harborConfig, archValue));
+        sendJson(res, 200, { task });
+        return;
+      }
+
+      // 批量同步：单个聚合任务
+      const displaySource = `${imageList.length} 个镜像`;
+      const displayTarget = `${targetHost}/${targetProject}/*`;
+      const task = createTask('镜像同步', displaySource, displayTarget, archValue);
+      task.meta = { images: imageList, targetRepo, targetProject };
+      saveTasks();
+
+      log('INFO', `创建批量镜像同步任务: ${task.id}, 共 ${imageList.length} 个镜像`);
+      addTaskLog(task.id, `创建批量同步任务：${imageList.length} 个镜像`);
+      for (const img of imageList) {
+        addTaskLog(task.id, `  - ${img}`);
+      }
+
+      setImmediate(() => bulkSyncImages(task.id, imageList, targetProject, harborConfig, archValue));
 
       sendJson(res, 200, { task });
       return;
@@ -1415,7 +1554,8 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const archValue = arch === 'system' ? 'system' : 'all';
+      const allowedArch = ['all', 'system', 'arm64', 'amd64'];
+      const archValue = allowedArch.includes(arch) ? arch : 'all';
       const accel = !!accelEnabled;
       const trimmedSavePath = savePath.trim();
 
@@ -1628,8 +1768,14 @@ const server = http.createServer(async (req, res) => {
       if (task.type === '镜像同步') {
         const harborConfig = harborConfigs.find(c => task.target.includes(c.harborUrl.replace(/^https?:\/\//, '')));
         if (harborConfig) {
-          const targetProject = task.target.split('/')[1];
-          setImmediate(() => syncImage(taskId, task.source, targetProject, harborConfig, task.arch || 'all'));
+          // 批量同步：从 meta 读取
+          if (task.meta && Array.isArray(task.meta.images) && task.meta.images.length > 1) {
+            const targetProject = task.meta.targetProject || task.target.split('/')[1];
+            setImmediate(() => bulkSyncImages(taskId, task.meta.images, targetProject, harborConfig, task.arch || 'all'));
+          } else {
+            const targetProject = task.target.split('/')[1];
+            setImmediate(() => syncImage(taskId, task.source, targetProject, harborConfig, task.arch || 'all'));
+          }
         }
       } else if (task.type === '本地导入') {
         // 检查 tar 包是否存在
