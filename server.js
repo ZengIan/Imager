@@ -568,29 +568,88 @@ function executeCommand(command, taskId, hidePassword = false) {
     log('INFO', `执行命令: ${displayCommand}`);
     addTaskLog(taskId, `执行: ${displayCommand}`);
 
-    exec(command, { encoding: 'utf8' }, (error, stdout, stderr) => {
-      if (stdout) {
-        stdout.trim().split('\n').forEach(line => {
-          if (line) addTaskLog(taskId, line);
-        });
+    // 使用 spawn 实时捕获输出
+    const { spawn } = require('child_process');
+      
+    const childProcess = spawn('bash', ['-c', command], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env }
+    });
+
+    let stdoutData = '';
+    let stderrData = '';
+    // 用于文件大小监控的 fallback 进度
+    let fileWatchTimer = null;
+
+    childProcess.stdout.on('data', (data) => {
+      const output = data.toString();
+      stdoutData += output;
+      // 同时处理 \n 和 \r 分隔的行
+      const parts = output.split(/[\r\n]/);
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (trimmed) {
+          addTaskLog(taskId, trimmed);
+        }
       }
-      if (stderr) {
-        stderr.trim().split('\n').forEach(line => {
-          if (line) addTaskLog(taskId, `错误: ${line}`);
-        });
+    });
+
+    childProcess.stderr.on('data', (data) => {
+      const output = data.toString();
+      stderrData += output;
+      const parts = output.split(/[\r\n]/);
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (trimmed) {
+          addTaskLog(taskId, trimmed);
+        }
       }
-      if (error) {
-        // 隐藏错误信息中的密码
-        let errorMessage = error.message;
+    });
+
+    // Fallback: skopeo copy 到 tar 文件时，通过轮询目标文件大小显示进度
+    if (command.includes('skopeo') && command.includes('docker-archive:')) {
+      const fileMatch = command.match(/docker-archive:([^:\s]+)/);
+      if (fileMatch && fileMatch[1]) {
+        const targetFile = fileMatch[1];
+        let lastSize = 0;
+        fileWatchTimer = setInterval(() => {
+          try {
+            if (fs.existsSync(targetFile)) {
+              const stats = fs.statSync(targetFile);
+              const currentSize = stats.size;
+              if (currentSize > 0 && currentSize !== lastSize) {
+                const sizeMB = (currentSize / 1024 / 1024).toFixed(1);
+                addTaskLog(taskId, `[已写入] ${sizeMB} MB...`);
+                lastSize = currentSize;
+              }
+            }
+          } catch (e) {}
+        }, 3000);
+      }
+    }
+
+    childProcess.on('close', (code) => {
+      // 清理文件监控定时器
+      if (fileWatchTimer) { clearInterval(fileWatchTimer); fileWatchTimer = null; }
+      
+      if (code === 0) {
+        resolve(stdoutData || stderrData);
+      } else {
+        let errorMessage = `命令退出码: ${code}`;
+        if (stderrData) errorMessage += `, stderr: ${stderrData}`;
         if (hidePassword) {
           errorMessage = errorMessage.replace(/-p\s+\S+/g, '-p ***');
         }
         errorMessage = errorMessage.replace(/--dest-creds\s+([^:]+):(\S+)/g, '--dest-creds $1:***');
         log('ERROR', `命令执行失败: ${errorMessage}`);
-        reject(error);
-      } else {
-        resolve(stdout);
+        reject(new Error(errorMessage));
       }
+    });
+
+    childProcess.on('error', (err) => {
+      if (fileWatchTimer) { clearInterval(fileWatchTimer); fileWatchTimer = null; }
+      log('ERROR', `启动进程失败: ${err.message}`);
+      reject(err);
     });
   });
 }
@@ -786,6 +845,31 @@ async function detectTarFormatAndImages(tarPath) {
   });
 }
 
+// 快速检测 tar 文件格式（只返回格式，不提取镜像列表）
+async function detectTarFormat(tarPath) {
+  return new Promise((resolve) => {
+    const extractDir = path.join(path.dirname(tarPath), 'temp_fmt_' + Date.now());
+    fs.mkdirSync(extractDir, { recursive: true });
+    
+    exec(`tar -xf "${tarPath}" -C "${extractDir}" index.json 2>/dev/null`, (error) => {
+      if (!error && fs.existsSync(path.join(extractDir, 'index.json'))) {
+        try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch (e) {}
+        return resolve({ format: 'oci' });
+      }
+      
+      exec(`tar -xf "${tarPath}" -C "${extractDir}" manifest.json 2>/dev/null`, (error2) => {
+        if (!error2 && fs.existsSync(path.join(extractDir, 'manifest.json'))) {
+          try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch (e) {}
+          return resolve({ format: 'docker' });
+        }
+        
+        try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch (e) {}
+        resolve({ format: 'unknown' });
+      });
+    });
+  });
+}
+
 // 从 OCI 格式 tar 包中提取镜像信息
 // 返回: [{ name: 'imager', tag: 'v1.0-rc02', fullRef: 'docker.io/zengian/imager:v1.0-rc02' }]
 async function extractOciImageTags(tarPath) {
@@ -875,15 +959,112 @@ async function loadAndPushTar(taskId, tarPath, targetProject, harborConfig, arch
     log('INFO', `镜像导入任务开始: ${taskId}, tar文件: ${tarFileName}`);
     addTaskLog(taskId, `本地导入开始，文件: ${tarFileName}`);
 
-    // 检测 tar 包格式
-    addTaskLog(taskId, '正在检测 tar 包格式...');
-    const { format, images } = await detectTarFormatAndImages(tarPath);
-    
     // 目标镜像名（从文件名推导）
     const defaultImageName = path.basename(tarPath).replace(/\.tar(\.gz)?$/, '');
     
     // 检查 skopeo 是否可用
     const hasSkopeo = await checkSkopeo();
+
+    // === 多层压缩检测：tar.gz 里包含多个 .tar 文件 ===
+    if (tarFileName.endsWith('.tar.gz') || tarFileName.endsWith('.tgz')) {
+      addTaskLog(taskId, '检测是否为多层压缩...');
+      
+      const extractDir = path.join(path.dirname(tarPath), 'extract_' + Date.now());
+      fs.mkdirSync(extractDir, { recursive: true });
+      
+      // 尝试解压 tar.gz
+      await executeCommand(`tar -xzf "${tarPath}" -C "${extractDir}"`, taskId);
+      
+      // 检查解压后是否包含 .tar 文件（多层）
+      const extractedFiles = fs.readdirSync(extractDir).filter(f => f.endsWith('.tar'));
+      
+      if (extractedFiles.length > 0) {
+        // 是多层压缩，逐个处理每个 .tar 文件
+        addTaskLog(taskId, `✅ 检测到多层压缩，包含 ${extractedFiles.length} 个镜像包:`);
+        for (const f of extractedFiles) {
+          addTaskLog(taskId, `  - ${f}`);
+        }
+        
+        const harborHost = harborConfig.harborUrl.replace(/^https?:\/\//, '');
+        const archOption = arch === 'all' ? '--multi-arch=all' : '--multi-arch=system';
+        let successCount = 0;
+        const pushedImages = [];
+        
+        for (let i = 0; i < extractedFiles.length; i++) {
+          const subTarFile = extractedFiles[i];
+          const subTarPath = path.join(extractDir, subTarFile);
+          
+          // 从子文件名推导镜像名
+          // 格式: {name}_{version}_{arch}.tar  →  nginx_1.11_amd64.tar → nginx:1.11
+          let cleanName = subTarFile.replace(/_latest\.tar$/, '').replace(/\.tar$/, '');
+          const archSuffixes = ['amd64', 'arm64', '386', 'ppc64le', 's390x', 'riscv64'];
+          let imageRepo, imageTag;
+
+          if (cleanName.includes('_')) {
+            const parts = cleanName.split('_');
+            const lastPart = parts[parts.length - 1];
+            
+            if (archSuffixes.includes(lastPart)) {
+              // 最后一段是架构名，倒数第二段是版本号
+              const version = parts[parts.length - 2];
+              const name = parts.slice(0, -2).join('/');
+              imageRepo = name || 'image';
+              imageTag = version;
+            } else {
+              // 没有架构后缀，最后一段是 tag
+              imageRepo = parts.slice(0, -1).join('/') || cleanName;
+              imageTag = lastPart;
+            }
+          } else {
+            imageRepo = cleanName;
+            imageTag = 'latest';
+          }
+          const targetImage = `${harborHost}/${targetProject}/${imageRepo}:${imageTag}`;
+          
+          addTaskLog(taskId, `[${i + 1}/${extractedFiles.length}] 导入: ${subTarFile} -> ${targetImage}`);
+          
+          try {
+            // 使用异步版本检测格式（提取 index.json/manifest.json 进行检测，比字节搜索更可靠）
+            const subFormat = await detectTarFormatAndImages(subTarPath);
+            const formatType = subFormat.format;
+            
+            // 只有明确检测为 OCI 格式才用 oci-archive，其他都用 docker-archive
+            const skopeoSrc = formatType === 'oci'
+              ? `oci-archive:${subTarPath}`
+              : `docker-archive:${subTarPath}`;
+            
+            const skopeoCmd = `skopeo copy ${archOption} ${skopeoSrc} docker://${targetImage} --dest-creds ${harborConfig.username}:${harborConfig.password} --dest-tls-verify=false`;
+            await executeCommand(skopeoCmd, taskId);
+            
+            pushedImages.push(targetImage);
+            successCount++;
+            addTaskLog(taskId, `[${i + 1}/${extractedFiles.length}] ✅ 导入成功: ${imageRepo}:${imageTag}`);
+          } catch (err) {
+            addTaskLog(taskId, `[${i + 1}/${extractedFiles.length}] ❌ 失败: ${subTarFile} - ${err.message?.substring(0, 100)}`);
+          }
+        }
+        
+        // 清理临时目录
+        try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch (e) {}
+        
+        const message = successCount === 1 
+          ? pushedImages[0]
+          : `镜像导入完成，成功 ${successCount}/${extractedFiles.length} 个`;
+        updateTaskStatus(taskId, successCount > 0 ? '完成' : '失败', message);
+        log('INFO', `多层镜像导入任务结束: ${taskId}, 成功 ${successCount}/${extractedFiles.length}`);
+        return;
+      } else {
+        // 不是多层压缩（解压后没有 .tar 文件），清理临时目录并走正常逻辑
+        try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch (e) {}
+        addTaskLog(taskId, '非多层压缩，按单文件处理');
+      }
+    }
+
+    // === 单层 tar / OCI / Docker 格式处理 ===
+    
+    // 检测 tar 包格式
+    addTaskLog(taskId, '正在检测 tar 包格式...');
+    const { format, images } = await detectTarFormatAndImages(tarPath);
 
     if (hasSkopeo) {
       const archOption = arch === 'all' ? '--multi-arch=all' : '--multi-arch=system';
@@ -1193,12 +1374,42 @@ async function bulkDownloadImages(taskId, images, savePath, arch, accelEnabled, 
       addTaskLog(taskId, `[${i + 1}/${images.length}] ✅ 下载完成: ${rawImage}`);
     }
 
-    // 打包为 tar.gz
+    // 打包为 tar.gz（附带 upload-images.sh 脚本，解压后自动生成文件夹）
+    const folderName = archiveName.replace(/\.tar\.gz$/, '');
+    const folderPath = path.join(tempDir, folderName);
+    fs.mkdirSync(folderPath, { recursive: true });
+
+    const scriptPath = path.join(ROOT, 'upload-images.sh');
+    if (fs.existsSync(scriptPath)) {
+      fs.copyFileSync(scriptPath, path.join(folderPath, 'upload-images.sh'));
+      fs.chmodSync(path.join(folderPath, 'upload-images.sh'), 0o755);
+      addTaskLog(taskId, `已附带 upload-images.sh`);
+    } else {
+      addTaskLog(taskId, `[WARN] upload-images.sh 未找到，已跳过`);
+    }
+
+    // 将所有镜像 tar 移到子目录（使解压后直接是一个文件夹）
+    const tempFiles = fs.readdirSync(tempDir);
+    for (const file of tempFiles) {
+      if (file === folderName) continue;
+      const srcPath = path.join(tempDir, file);
+      if (fs.statSync(srcPath).isFile()) {
+        fs.renameSync(srcPath, path.join(folderPath, file));
+      }
+    }
+
     const finalArchive = path.join(savePath, archiveName);
     updateTaskStatus(taskId, '执行中', '打包为 tar.gz');
     addTaskLog(taskId, `开始打包 -> ${finalArchive}`);
 
-    await executeCommand(`tar -czf "${finalArchive}" -C "${tempDir}" .`, taskId);
+    await executeCommand(`tar -czf "${finalArchive}" -C "${tempDir}" "${folderName}"`, taskId);
+
+    // 去掉归档文件的执行权限
+    try {
+      fs.chmodSync(finalArchive, 0o644);
+    } catch (e) {
+      // 忽略
+    }
 
     // 清理临时目录
     try {
@@ -1559,10 +1770,14 @@ const server = http.createServer(async (req, res) => {
       const accel = !!accelEnabled;
       const trimmedSavePath = savePath.trim();
 
-      // 生成归档文件名（当前时间戳）
+      // 生成归档文件名：camp-apiserver_v2.0.0-rc-03_20260517.tar.gz（取第一个镜像名）
+      const firstSafeName = imageToSafeName(images[0]);
+      const nameParts = firstSafeName.split('_');
+      const firstTag = nameParts[nameParts.length - 1];
+      const firstName = nameParts.slice(1, -1).join('-');
       const now = new Date();
-      const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-      const archiveName = `images_${ts}.tar.gz`;
+      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+      const archiveName = `${firstName}_${firstTag}_${dateStr}.tar.gz`;
 
       const displaySource = images.length === 1 ? images[0] : `${images.length} 个镜像`;
       const target = path.posix.join(trimmedSavePath.replace(/\\/g, '/'), archiveName);
